@@ -1,0 +1,17 @@
+name: NJ Lottery Bot
+
+on:
+  schedule:
+    - cron: '0 14 * * *'
+    - cron: '30 18 * * *'
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Colab
+        run: |
+          curl -L "https://colab.research.google.com/drive/18FdRAHCj51DAJZtqPJPl0pro3blfuJwo?usp=sharing?authuser=0#execute=true" --max-time 300 --silent
+          echo "Done"
