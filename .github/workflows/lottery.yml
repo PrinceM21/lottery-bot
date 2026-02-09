@@ -13,4 +13,5 @@ jobs:
     steps:
       - name: Trigger Colab
         run: |
-          curl -L "https://colab.research.google.com/drive/18FdRAHCj51DAJZtqPJPl0pro3blfuJwo?usp=sharing?authuser=0#execute=true"Done"
+          curl -L "https://colab.research.google.com/drive/18EdRAHC351DA17tqPJP10pro3b1fuJwo?authuser=0#execute=true" --max-time 300 --silent
+          echo "Done"
