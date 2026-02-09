@@ -2,16 +2,63 @@ name: NJ Lottery Bot
 
 on:
   schedule:
-    - cron: '0 14 * * *'
-    - cron: '30 18 * * *'
-    - cron: '0 5 * * *'
+    - cron: '0 14 * * *'   # 9 AM EST
+    - cron: '30 18 * * *'  # 1:30 PM EST
+    - cron: '0 5 * * *'    # 12 AM EST
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Colab
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install requests
+        run: pip install requests
+      
+      - name: Run Lottery Predictions
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          curl -L "https://colab.research.google.com/drive/1X9fPFK2Udt1YoiKgXHCgeyPu5yb0xECJ?usp=sharing?authuser=0#execute=true" --max-time 300 --silent
-          echo "Done"
+          python3 << 'ENDOFPYTHON'
+          import requests
+          import os
+          from datetime import datetime
+          import random
+          
+          BOT_TOKEN = os.environ['BOT_TOKEN']
+          CHAT_ID = os.environ['CHAT_ID']
+          
+          def send_telegram(msg):
+              url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+              data = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+              r = requests.post(url, data=data)
+              print(f"Telegram response: {r.status_code}")
+              return r.status_code == 200
+          
+          today = datetime.now()
+          day = today.weekday()
+          pick3 = (400 + day * 70 + random.randint(0, 99)) % 1000
+          pick4 = (3000 + day * 300 + random.randint(0, 999)) % 10000
+          
+          message = f"""☀️ *NJ Lottery Predictions*
+          {today.strftime('%A, %B %d, %Y')}
+          
+          🎲 *PICK 3*: `{str(pick3).zfill(3)}`
+          🎲 *PICK 4*: `{str(pick4).zfill(4)}`
+          
+          Good luck! 🍀"""
+          
+          print(f"Pick 3: {str(pick3).zfill(3)}")
+          print(f"Pick 4: {str(pick4).zfill(4)}")
+          print("Sending to Telegram...")
+          
+          if send_telegram(message):
+              print("✅ SUCCESS!")
+          else:
+              print("❌ FAILED!")
+          ENDOFPYTHON
