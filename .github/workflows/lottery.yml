@@ -196,11 +196,12 @@ jobs:
                   p3, c3 = make_prediction(df3, patterns3, 'pick3', 'midday')
                   p4, c4 = make_prediction(df4, patterns4, 'pick4', 'midday')
                   
+                  date_str = now.strftime('%A, %B %d, %Y')
                   msg = f"""☀️ *NJ Lottery - MIDDAY*
-{now.strftime('%A, %B %d, %Y')}
+{date_str}
 
-🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3}%)
-🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4}%)
+🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3} percent)
+🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4} percent)
 
 ━━━━━━━━━━━━━━━━━━━━━
 🧠 *Powered by:*
@@ -224,11 +225,12 @@ Good luck! 🍀"""
                   p3, c3 = make_prediction(df3, patterns3, 'pick3', 'evening', midday_p3)
                   p4, c4 = make_prediction(df4, patterns4, 'pick4', 'evening', midday_p4)
                   
+                  date_str = now.strftime('%A, %B %d, %Y')
                   msg = f"""🌙 *EVENING Predictions*
-{now.strftime('%A, %B %d, %Y')}
+{date_str}
 
-🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3}%)
-🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4}%)
+🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3} percent)
+🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4} percent)
 
 ✨ *Using midday correlation!*
 
@@ -241,8 +243,9 @@ Good luck! 🍀"""
               elif 3 <= hour < 6:
                   print("\n🌙 LATE NIGHT: Summary")
                   
+                  date_str = now.strftime('%A, %B %d, %Y')
                   msg = f"""🌙 *Daily Summary*
-{now.strftime('%A, %B %d, %Y')}
+{date_str}
 
 🧠 System Status: ✅ Active
 📊 Data: 20 years analyzed
