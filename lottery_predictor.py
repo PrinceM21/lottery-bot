@@ -87,7 +87,7 @@ def fetch_nj_results(game='pick3'):
     print(f"🔍 Fetching {game.upper()} results...")
     
     try:
-        url = f"https://www.njlottery.com/en-us/drawgames/{game}.html"
+        url = f"https://www.njlottery.com/en-us/drawgames/pick3.html"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
         
