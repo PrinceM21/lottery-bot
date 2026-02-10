@@ -2,9 +2,9 @@ name: NJ Lottery Ultimate System
 
 on:
   schedule:
-    - cron: '0 13 * * *'
-    - cron: '30 17 * * *'
-    - cron: '30 4 * * *'
+    - cron: '0 14 * * *'   # 9:00 AM EST (14:00 UTC)
+    - cron: '30 18 * * *'  # 1:30 PM EST (18:30 UTC)
+    - cron: '30 5 * * *'   # 12:30 AM EST (05:30 UTC)
   workflow_dispatch:
 
 jobs:
@@ -17,12 +17,13 @@ jobs:
           python-version: '3.10'
       
       - name: Install dependencies
-        run: pip install pandas numpy openpyxl requests scikit-learn
+        run: pip install pandas numpy openpyxl requests scikit-learn beautifulsoup4
       
       - name: Run predictions
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          FORCE_TEST: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python3 lottery_predictor.py
       
       - name: Commit logs
