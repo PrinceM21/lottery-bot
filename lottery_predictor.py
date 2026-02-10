@@ -177,8 +177,28 @@ def main():
     hour = now.hour
     date_str = now.strftime('%A, %B %d, %Y')
     
-    # MORNING (9 AM) - Midday predictions
-    if 12 <= hour < 14:
+    # FORCE TEST MODE - always send when manually triggered
+    force_test = os.environ.get('FORCE_TEST', 'false').lower() == 'true'
+    
+    if force_test:
+        print("\n🧪 FORCE TEST MODE - Sending test message")
+        p3, c3 = make_prediction(df3, patterns3, 'pick3', 'midday')
+        p4, c4 = make_prediction(df4, patterns4, 'pick4', 'midday')
+        
+        msg = f"""🧪 *TEST - NJ Lottery System*
+{date_str}
+
+🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3} pct)
+🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4} pct)
+
+This is a test! System is working! ✅"""
+        
+        send_telegram(msg)
+        print(f"Test sent: P3={p3}, P4={p4}")
+        return
+    
+    # MORNING (9 AM EST = 14:00 UTC) - Midday predictions
+    if 14 <= hour < 16:
         print("\nMORNING: Midday predictions")
         
         p3, c3 = make_prediction(df3, patterns3, 'pick3', 'midday')
@@ -201,8 +221,8 @@ Good luck! 🍀"""
         send_telegram(msg)
         print(f"Sent: P3={p3} ({c3}%), P4={p4} ({c4}%)")
     
-    # AFTERNOON (1:30 PM) - Evening predictions
-    elif 16 <= hour < 19:
+    # AFTERNOON (1:30 PM EST = 18:30 UTC) - Evening predictions
+    elif 18 <= hour < 20:
         print("\nAFTERNOON: Evening predictions")
         
         midday_p3 = int(patterns3['recent_avg'])
@@ -224,8 +244,8 @@ Good luck! 🍀"""
         send_telegram(msg)
         print(f"Sent: P3={p3} ({c3}%), P4={p4} ({c4}%)")
     
-    # LATE NIGHT (12:30 AM) - Summary
-    elif 3 <= hour < 6:
+    # LATE NIGHT (12:30 AM EST = 05:30 UTC) - Summary
+    elif 5 <= hour < 7:
         print("\nLATE NIGHT: Summary")
         
         msg = f"""🌙 *Daily Summary*
