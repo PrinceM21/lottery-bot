@@ -17,14 +17,14 @@ jobs:
           python-version: '3.10'
       
       - name: Install dependencies
-        run: pip install pandas numpy openpyxl requests scikit-learn beautifulsoup4
+        run: pip install pandas numpy openpyxl requests scikit-learn beautifulsoup4 tensorflow xgboost lightgbm
       
       - name: Run predictions
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FORCE_TEST: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: python3 lottery_predictor.py
+        run: python3 lottery_predictor_advanced_github.py
       
       - name: Commit logs
         run: |
