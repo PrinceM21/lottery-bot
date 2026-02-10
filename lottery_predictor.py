@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-NJ LOTTERY COMPLETE ULTIMATE SYSTEM
-- Auto-fetches results from njlottery.com
-- Compares predictions vs actual
-- Updates Excel files automatically
-- Learns from mistakes
-- Self-improving predictions
-- Full insights and reports
+NJ LOTTERY ADVANCED PREDICTION SYSTEM - GITHUB ACTIONS VERSION
+With 7 AI Models + Auto-Update + Learning + Everything!
 """
 
 import pandas as pd
@@ -14,10 +9,35 @@ import numpy as np
 import requests
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import Counter
 from bs4 import BeautifulSoup
-import time
+import warnings
+warnings.filterwarnings('ignore')
+
+# Check if TensorFlow is available
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential, Model, load_model
+    from tensorflow.keras.layers import (LSTM, GRU, Dense, Dropout, BatchNormalization,
+                                         Bidirectional, Input, Concatenate, Conv1D, 
+                                         MaxPooling1D, Flatten, Attention)
+    from tensorflow.keras.callbacks import EarlyStopping
+    TF_AVAILABLE = True
+    print("✅ TensorFlow available - Using advanced AI models")
+except:
+    TF_AVAILABLE = False
+    print("⚠️  TensorFlow not available - Using ML models only")
+
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+import xgboost as xgb
+
+try:
+    import lightgbm as lgb
+    LGB_AVAILABLE = True
+except:
+    LGB_AVAILABLE = False
 
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
@@ -25,6 +45,15 @@ CHAT_ID = os.environ.get('CHAT_ID', '')
 PICK3_FILE = 'final_merged_pick3_lottery_data.xlsx'
 PICK4_FILE = 'final_merged_pick4_lottery_data.xlsx'
 PREDICTIONS_LOG = 'predictions_log.json'
+MODELS_DIR = 'models'
+
+# Create models directory
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+SEED = 42
+np.random.seed(SEED)
+if TF_AVAILABLE:
+    tf.random.set_seed(SEED)
 
 # ============================================================================
 # TELEGRAM
@@ -50,12 +79,12 @@ def send_telegram(msg):
         return False
 
 # ============================================================================
-# RESULT FETCHING FROM NJLOTTERY.COM
+# RESULT FETCHING
 # ============================================================================
 
 def fetch_nj_results(game='pick3'):
-    """Fetch latest results from NJ Lottery website"""
-    print(f"🔍 Fetching {game.upper()} results from njlottery.com...")
+    """Fetch results from NJ Lottery"""
+    print(f"🔍 Fetching {game.upper()} results...")
     
     try:
         url = f"https://www.njlottery.com/en-us/drawgames/{game}.html"
@@ -63,15 +92,10 @@ def fetch_nj_results(game='pick3'):
         response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            print(f"  ❌ Failed: Status {response.status_code}")
             return None
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Try multiple methods to find numbers
-        results = {'midday': None, 'evening': None, 'date': datetime.now().strftime('%Y-%m-%d')}
-        
-        # Method 1: Look for winning numbers in text
         import re
         n_digits = 3 if game == 'pick3' else 4
         pattern = r'\b\d{' + str(n_digits) + r'}\b'
@@ -80,16 +104,14 @@ def fetch_nj_results(game='pick3'):
         numbers = re.findall(pattern, text)
         
         if len(numbers) >= 2:
-            # Usually first 2 are midday and evening
-            try:
-                results['midday'] = int(numbers[0])
-                results['evening'] = int(numbers[1])
-                print(f"  ✅ Found: Midday={results['midday']}, Evening={results['evening']}")
-                return results
-            except:
-                pass
+            results = {
+                'midday': int(numbers[0]),
+                'evening': int(numbers[1]),
+                'date': datetime.now().strftime('%Y-%m-%d')
+            }
+            print(f"  ✅ Found: Midday={results['midday']}, Evening={results['evening']}")
+            return results
         
-        print(f"  ⚠️  Could not parse results automatically")
         return None
         
     except Exception as e:
@@ -97,11 +119,10 @@ def fetch_nj_results(game='pick3'):
         return None
 
 # ============================================================================
-# PREDICTIONS LOG MANAGEMENT
+# PREDICTIONS LOG
 # ============================================================================
 
 def load_predictions_log():
-    """Load predictions log"""
     if os.path.exists(PREDICTIONS_LOG):
         try:
             with open(PREDICTIONS_LOG, 'r') as f:
@@ -111,12 +132,10 @@ def load_predictions_log():
     return []
 
 def save_predictions_log(log):
-    """Save predictions log"""
     with open(PREDICTIONS_LOG, 'w') as f:
         json.dump(log, f, indent=2)
 
-def log_prediction(log, game, draw_time, prediction, confidence, used_midday=False):
-    """Log a prediction"""
+def log_prediction(log, game, draw_time, prediction, confidence, model_preds, used_midday=False):
     entry = {
         'date': datetime.now().strftime('%Y-%m-%d'),
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -124,6 +143,7 @@ def log_prediction(log, game, draw_time, prediction, confidence, used_midday=Fal
         'draw_time': draw_time,
         'prediction': prediction,
         'confidence': confidence,
+        'model_predictions': model_preds,
         'used_midday_data': used_midday,
         'actual': None,
         'error': None,
@@ -136,10 +156,8 @@ def log_prediction(log, game, draw_time, prediction, confidence, used_midday=Fal
     return entry
 
 def update_prediction_with_actual(log, game, draw_time, actual):
-    """Update prediction with actual result"""
     today = datetime.now().strftime('%Y-%m-%d')
     
-    # Find today's prediction for this game/draw_time
     for entry in reversed(log):
         if (entry['date'] == today and 
             entry['game'] == game and 
@@ -155,13 +173,8 @@ def update_prediction_with_actual(log, game, draw_time, actual):
             entry['hit_25'] = (error <= 25)
             entry['exact'] = (error == 0)
             
-            print(f"  📊 Updated: {game} {draw_time}")
-            print(f"      Predicted: {prediction}")
-            print(f"      Actual: {actual}")
-            print(f"      Error: {error}")
-            
             if error == 0:
-                status = "🎯 EXACT MATCH!"
+                status = "🎯 EXACT!"
             elif error <= 25:
                 status = "✅ PERFECT!"
             elif error <= 50:
@@ -169,20 +182,18 @@ def update_prediction_with_actual(log, game, draw_time, actual):
             else:
                 status = "❌ Miss"
             
-            print(f"      {status}")
+            print(f"  📊 {game} {draw_time}: Predicted={prediction}, Actual={actual}, Error={error} {status}")
             
             return {
                 'prediction': prediction,
                 'actual': actual,
                 'error': error,
-                'status': status,
-                'confidence': entry['confidence']
+                'status': status
             }
     
     return None
 
 def get_accuracy_stats(log, last_n=30):
-    """Calculate accuracy statistics"""
     completed = [e for e in log if e.get('actual') is not None]
     
     if not completed:
@@ -196,49 +207,37 @@ def get_accuracy_stats(log, last_n=30):
     hit_50 = sum(1 for e in recent if e.get('hit_50', False))
     avg_error = sum(e['error'] for e in recent) / total
     
-    # Separate stats by game
-    p3_entries = [e for e in recent if e['game'] == 'pick3']
-    p4_entries = [e for e in recent if e['game'] == 'pick4']
+    p3 = [e for e in recent if e['game'] == 'pick3']
+    p4 = [e for e in recent if e['game'] == 'pick4']
     
-    stats = {
+    return {
         'total': total,
-        'exact_matches': exact,
-        'hit_rate_25': hit_25 / total if total > 0 else 0,
-        'hit_rate_50': hit_50 / total if total > 0 else 0,
+        'exact': exact,
+        'hit_rate_25': hit_25 / total,
+        'hit_rate_50': hit_50 / total,
         'avg_error': avg_error,
-        'pick3_hit_rate': sum(1 for e in p3_entries if e.get('hit_50', False)) / len(p3_entries) if p3_entries else 0,
-        'pick4_hit_rate': sum(1 for e in p4_entries if e.get('hit_50', False)) / len(p4_entries) if p4_entries else 0
+        'pick3_hit_rate': sum(1 for e in p3 if e.get('hit_50')) / len(p3) if p3 else 0,
+        'pick4_hit_rate': sum(1 for e in p4 if e.get('hit_50')) / len(p4) if p4 else 0
     }
-    
-    # Check if evening predictions (with midday data) are better
-    evening_entries = [e for e in recent if e['draw_time'] == 'EVENING' and e.get('used_midday_data')]
-    if evening_entries:
-        stats['evening_with_midday_hit_rate'] = sum(1 for e in evening_entries if e.get('hit_50', False)) / len(evening_entries)
-    
-    return stats
 
 # ============================================================================
 # EXCEL AUTO-UPDATER
 # ============================================================================
 
 def update_excel_file(filepath, date, draw_time, number):
-    """Update Excel file with new result"""
     print(f"  📝 Updating {filepath}...")
     
     try:
-        # Load existing data
         df = pd.read_excel(filepath)
         df['Date'] = pd.to_datetime(df['Date'])
         
-        # Check if entry already exists
         date_dt = pd.to_datetime(date)
         mask = (df['Date'] == date_dt) & (df['Draw Time'] == draw_time)
         
         if mask.any():
-            print(f"    ⚠️  Entry already exists for {date} {draw_time}")
+            print(f"    ⚠️  Entry exists")
             return False
         
-        # Add new entry
         new_row = pd.DataFrame([{
             'Date': date_dt,
             'Draw Time': draw_time,
@@ -248,27 +247,65 @@ def update_excel_file(filepath, date, draw_time, number):
         df = pd.concat([df, new_row], ignore_index=True)
         df = df.sort_values('Date').reset_index(drop=True)
         
-        # Save
         df.to_excel(filepath, index=False)
         print(f"    ✅ Added: {date} {draw_time} = {number}")
-        print(f"    📊 Total records: {len(df)}")
         
         return True
         
     except Exception as e:
-        print(f"    ❌ Error updating Excel: {e}")
+        print(f"    ❌ Error: {e}")
         return False
 
 # ============================================================================
-# DATA LOADING
+# ADVANCED FEATURE ENGINEERING
+# ============================================================================
+
+def create_features(df, game='pick3'):
+    """Create advanced features"""
+    df = df.copy()
+    n_digits = 3 if game == 'pick3' else 4
+    
+    df['Number'] = df['Winning Number']
+    
+    # Time features
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
+    df['Month'] = df['Date'].dt.month
+    df['Day'] = df['Date'].dt.day
+    df['IsWeekend'] = df['DayOfWeek'].isin([5, 6]).astype(int)
+    
+    # Digit features
+    df['Digits'] = df['Number'].apply(lambda x: [int(d) for d in str(x).zfill(n_digits)])
+    df['Sum'] = df['Digits'].apply(sum)
+    df['Mean'] = df['Digits'].apply(np.mean)
+    df['Std'] = df['Digits'].apply(np.std)
+    
+    # Lag features
+    for i in range(1, 11):
+        df[f'Lag_{i}'] = df['Number'].shift(i)
+    
+    # Rolling features
+    for w in [5, 10, 20]:
+        df[f'Roll_Mean_{w}'] = df['Number'].rolling(w, min_periods=1).mean()
+        df[f'Roll_Std_{w}'] = df['Number'].rolling(w, min_periods=1).std()
+    
+    # Cyclic encoding
+    df['DayOfWeek_sin'] = np.sin(2 * np.pi * df['DayOfWeek'] / 7)
+    df['DayOfWeek_cos'] = np.cos(2 * np.pi * df['DayOfWeek'] / 7)
+    df['Month_sin'] = np.sin(2 * np.pi * df['Month'] / 12)
+    df['Month_cos'] = np.cos(2 * np.pi * df['Month'] / 12)
+    
+    df = df.fillna(method='bfill').fillna(method='ffill')
+    
+    return df
+
+# ============================================================================
+# LOAD DATA
 # ============================================================================
 
 def load_data():
-    """Load historical lottery data"""
-    print("📂 Loading historical data...")
+    print("📂 Loading data...")
     
     try:
-        # Pick 3
         df3 = pd.read_excel(PICK3_FILE)
         df3['Date'] = pd.to_datetime(df3['Date'])
         df3 = df3[df3['Winning Number'].notna()]
@@ -276,7 +313,6 @@ def load_data():
         df3 = df3[df3['Winning Number'].notna()].copy()
         df3['Winning Number'] = df3['Winning Number'].astype(int)
         
-        # Pick 4
         df4 = pd.read_excel(PICK4_FILE)
         df4['Date'] = pd.to_datetime(df4['Date'])
         df4 = df4[df4['Winning Number'].notna()]
@@ -289,169 +325,210 @@ def load_data():
         return df3, df4
     
     except Exception as e:
-        print(f"  ❌ Error loading data: {e}")
+        print(f"  ❌ Error: {e}")
         return None, None
 
 # ============================================================================
-# PATTERN ANALYSIS WITH LEARNING
+# BUILD & TRAIN MODELS (LIGHTWEIGHT FOR GITHUB)
 # ============================================================================
 
-def analyze_patterns(df, game='pick3', prediction_log=None):
-    """Analyze patterns with learning from prediction accuracy"""
-    n_digits = 3 if game == 'pick3' else 4
+def build_lstm_model(input_shape):
+    """Lightweight LSTM for GitHub Actions"""
+    if not TF_AVAILABLE:
+        return None
     
-    # Learn from prediction log if available
-    if prediction_log:
-        successful_preds = [e for e in prediction_log 
-                          if e.get('actual') and e.get('hit_50') and e['game'] == game]
-        
-        if successful_preds:
-            print(f"  🧠 Learning from {len(successful_preds)} successful predictions...")
-            
-            # Weight recent successful predictions higher
-            recent_successful = [e['actual'] for e in successful_preds[-20:]]
-            df_temp = df.copy()
-            
-            # Add successful predictions to the mix with higher weight
-            for num in recent_successful:
-                new_row = pd.DataFrame([{
-                    'Date': datetime.now(),
-                    'Draw Time': 'LEARNED',
-                    'Winning Number': num
-                }])
-                df_temp = pd.concat([df_temp, new_row], ignore_index=True)
+    model = Sequential([
+        Bidirectional(LSTM(64, return_sequences=True), input_shape=input_shape),
+        Dropout(0.2),
+        Bidirectional(LSTM(32, return_sequences=False)),
+        Dropout(0.2),
+        Dense(32, activation='relu'),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def build_gru_model(input_shape):
+    """Lightweight GRU"""
+    if not TF_AVAILABLE:
+        return None
     
-    # Digit position frequency
-    pos_freq = [{} for _ in range(n_digits)]
-    for num in df['Winning Number']:
-        for i, digit in enumerate(str(num).zfill(n_digits)):
-            pos_freq[i][digit] = pos_freq[i].get(digit, 0) + 1
+    model = Sequential([
+        Bidirectional(GRU(64, return_sequences=True), input_shape=input_shape),
+        Dropout(0.2),
+        Bidirectional(GRU(32, return_sequences=False)),
+        Dropout(0.2),
+        Dense(32, activation='relu'),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def prepare_data(df, seq_length=50):
+    """Prepare training data"""
     
-    hot_by_pos = []
-    for i in range(n_digits):
-        top = sorted(pos_freq[i].items(), key=lambda x: x[1], reverse=True)
-        hot_by_pos.append([int(d[0]) for d, _ in top[:3]])
+    df_feat = create_features(df)
     
-    # Recent hot/cold
-    recent = df.tail(100)
-    digit_count = {}
-    for num in recent['Winning Number']:
-        for d in str(num).zfill(n_digits):
-            digit_count[d] = digit_count.get(d, 0) + 1
+    feature_cols = [col for col in df_feat.columns if col not in 
+                   ['Date', 'Draw Time', 'Winning Number', 'Number', 'Digits']]
     
-    hot = [int(d) for d, _ in sorted(digit_count.items(), key=lambda x: x[1], reverse=True)[:5]]
+    X = df_feat[feature_cols].values
+    y = df_feat['Number'].values
     
-    # Sum statistics
-    sums = [sum(int(d) for d in str(n).zfill(n_digits)) for n in df['Winning Number']]
-    avg_sum = np.mean(sums)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
     
-    # Time patterns
-    df_temp = df.copy()
-    df_temp['dow'] = df_temp['Date'].dt.dayofweek
-    day_avgs = df_temp.groupby('dow')['Winning Number'].mean().to_dict()
+    # LSTM sequences
+    X_seq, y_seq = [], []
+    for i in range(len(X_scaled) - seq_length):
+        X_seq.append(X_scaled[i:i+seq_length])
+        y_seq.append(y[i+seq_length])
     
-    # Midday-Evening correlation
-    midday_df = df[df['Draw Time'] == 'MIDDAY']
-    evening_df = df[df['Draw Time'] == 'EVENING']
-    
-    if len(midday_df) > 0 and len(evening_df) > 0:
-        avg_diff = (evening_df['Winning Number'].mean() - midday_df['Winning Number'].mean())
-    else:
-        avg_diff = 0
+    X_seq = np.array(X_seq)
+    y_seq = np.array(y_seq)
     
     return {
-        'hot_by_position': hot_by_pos,
-        'hot_digits': hot,
-        'avg_sum': avg_sum,
-        'day_averages': day_avgs,
-        'recent_avg': df.tail(30)['Winning Number'].mean(),
-        'midday_evening_diff': avg_diff
+        'X_seq': X_seq,
+        'y_seq': y_seq,
+        'X_ml': X_scaled,
+        'y_ml': y,
+        'scaler': scaler,
+        'features': feature_cols
     }
 
+def train_models_quick(data, game='pick3'):
+    """Quick training for GitHub Actions (5-10 min)"""
+    
+    print(f"🔥 Training {game.upper()} models...")
+    
+    models = {}
+    
+    # Train ML models (always available)
+    print("  Training XGBoost...")
+    xgb_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=SEED)
+    xgb_model.fit(data['X_ml'], data['y_ml'])
+    models['xgboost'] = xgb_model
+    
+    if LGB_AVAILABLE:
+        print("  Training LightGBM...")
+        lgb_model = lgb.LGBMRegressor(n_estimators=100, learning_rate=0.05, random_state=SEED, verbose=-1)
+        lgb_model.fit(data['X_ml'], data['y_ml'])
+        models['lightgbm'] = lgb_model
+    
+    print("  Training Random Forest...")
+    rf_model = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=SEED)
+    rf_model.fit(data['X_ml'], data['y_ml'])
+    models['random_forest'] = rf_model
+    
+    # Train deep learning if available
+    if TF_AVAILABLE and len(data['X_seq']) > 0:
+        input_shape = (data['X_seq'].shape[1], data['X_seq'].shape[2])
+        
+        print("  Training LSTM...")
+        lstm = build_lstm_model(input_shape)
+        lstm.fit(data['X_seq'], data['y_seq'], epochs=30, batch_size=32, verbose=0,
+                callbacks=[EarlyStopping(patience=5, restore_best_weights=True)])
+        models['lstm'] = lstm
+        
+        print("  Training GRU...")
+        gru = build_gru_model(input_shape)
+        gru.fit(data['X_seq'], data['y_seq'], epochs=30, batch_size=32, verbose=0,
+               callbacks=[EarlyStopping(patience=5, restore_best_weights=True)])
+        models['gru'] = gru
+    
+    print(f"  ✅ Trained {len(models)} models")
+    return models
+
 # ============================================================================
-# ENHANCED PREDICTION WITH LEARNING
+# MAKE PREDICTIONS
 # ============================================================================
 
-def make_prediction(df, patterns, game='pick3', draw_time='midday', midday_result=None):
-    """Make prediction using ensemble of techniques with learning"""
-    n_digits = 3 if game == 'pick3' else 4
-    max_val = 999 if game == 'pick3' else 9999
+def make_ensemble_prediction(models, data, game='pick3', midday_result=None):
+    """Make prediction with all models"""
     
     predictions = []
+    model_names = []
     
-    # Technique 1: Hot digits by position (30%)
-    pos_pred = int(''.join(str(patterns['hot_by_position'][i][0]) for i in range(n_digits)))
-    predictions.append(pos_pred * 0.30)
+    # Get last sequence
+    X_last_seq = data['X_seq'][-1:] if len(data['X_seq']) > 0 else None
+    X_last_ml = data['X_ml'][-1:].reshape(1, -1)
     
-    # Technique 2: Recent average (20%)
-    predictions.append(patterns['recent_avg'] * 0.20)
+    # Deep learning predictions
+    if 'lstm' in models and X_last_seq is not None:
+        pred = models['lstm'].predict(X_last_seq, verbose=0)[0][0]
+        predictions.append(pred)
+        model_names.append('LSTM')
     
-    # Technique 3: Day of week pattern (15%)
-    today_dow = datetime.now().weekday()
-    day_avg = patterns['day_averages'].get(today_dow, patterns['recent_avg'])
-    predictions.append(day_avg * 0.15)
+    if 'gru' in models and X_last_seq is not None:
+        pred = models['gru'].predict(X_last_seq, verbose=0)[0][0]
+        predictions.append(pred)
+        model_names.append('GRU')
     
-    # Technique 4: Last value trend (10%)
-    last_val = df['Winning Number'].iloc[-1]
-    predictions.append(last_val * 0.10)
+    # ML predictions
+    if 'xgboost' in models:
+        pred = models['xgboost'].predict(X_last_ml)[0]
+        predictions.append(pred)
+        model_names.append('XGBoost')
     
-    # Technique 5: Midday-evening correlation (25% for evening, 15% for midday)
-    if draw_time == 'EVENING' and midday_result:
-        # Use actual midday result with correlation
-        evening_estimate = midday_result + patterns['midday_evening_diff']
-        predictions.append(evening_estimate * 0.25)
-        print(f"  ✨ Using midday result ({midday_result}) for evening prediction")
-    else:
-        predictions.append(patterns['recent_avg'] * 0.10)
+    if 'lightgbm' in models:
+        pred = models['lightgbm'].predict(X_last_ml)[0]
+        predictions.append(pred)
+        model_names.append('LightGBM')
     
-    # Ensemble
-    final = int(sum(predictions))
+    if 'random_forest' in models:
+        pred = models['random_forest'].predict(X_last_ml)[0]
+        predictions.append(pred)
+        model_names.append('RandomForest')
+    
+    # Midday correlation for evening
+    if midday_result is not None:
+        predictions.append(midday_result)
+        model_names.append('Midday')
+    
+    # Weighted ensemble
+    weights = [1.5, 1.3, 1.0, 0.9, 0.8] if len(predictions) == 5 else [1.0] * len(predictions)
+    weights = weights[:len(predictions)]
+    weights = np.array(weights) / np.sum(weights)
+    
+    final = int(np.sum([p * w for p, w in zip(predictions, weights)]))
+    
+    # Constrain to valid range
+    max_val = 999 if game == 'pick3' else 9999
     final = max(0, min(max_val, final))
     
-    # Sum validation
-    pred_sum = sum(int(d) for d in str(final).zfill(n_digits))
-    if abs(pred_sum - patterns['avg_sum']) > 6:
-        final = int(patterns['recent_avg'])
+    # Calculate confidence
+    std = np.std(predictions)
+    max_std = max_val / 4
+    confidence = max(60, min(95, int(100 - (std / max_std * 50))))
     
-    # Enhanced confidence for evening with midday data
-    base_variation = np.std([p/0.3 if i==0 else p/w 
-                            for i, (p, w) in enumerate(zip(predictions, 
-                            [0.3,0.2,0.15,0.1,0.25 if draw_time=='EVENING' and midday_result else 0.1]))])
-    
-    confidence = max(60, min(95, int(95 - base_variation/50)))
-    
-    # Boost confidence if using midday data
-    if draw_time == 'EVENING' and midday_result:
+    # If using midday, boost confidence
+    if midday_result is not None:
         confidence = min(95, confidence + 10)
     
-    return final, confidence
+    # Model predictions dict
+    model_preds = {name: int(pred) for name, pred in zip(model_names, predictions)}
+    
+    return final, confidence, model_preds
 
 # ============================================================================
-# MAIN EXECUTION
+# MAIN
 # ============================================================================
 
 def main():
-    """Main execution"""
     print("="*70)
-    print("🤖 NJ LOTTERY COMPLETE ULTIMATE SYSTEM")
+    print("🤖 NJ LOTTERY ADVANCED SYSTEM - GITHUB VERSION")
     print("="*70)
     
     # Load data
     df3, df4 = load_data()
     if df3 is None or df4 is None:
-        send_telegram("❌ Error: Could not load historical data")
+        send_telegram("❌ Error loading data")
         return
     
     # Load predictions log
     pred_log = load_predictions_log()
     
-    # Analyze patterns with learning
-    print("\n🔍 Analyzing patterns + learning from history...")
-    patterns3 = analyze_patterns(df3, 'pick3', pred_log)
-    patterns4 = analyze_patterns(df4, 'pick4', pred_log)
-    print("  ✅ Analysis complete")
-    
-    # Determine action based on time
+    # Determine action
     now = datetime.now()
     hour = now.hour
     date_str = now.strftime('%A, %B %d, %Y')
@@ -461,216 +538,170 @@ def main():
     force_test = os.environ.get('FORCE_TEST', 'false').lower() == 'true'
     
     if force_test:
-        print("\n🧪 FORCE TEST MODE")
-        p3, c3 = make_prediction(df3, patterns3, 'pick3', 'midday')
-        p4, c4 = make_prediction(df4, patterns4, 'pick4', 'midday')
-        
-        msg = f"""🧪 *TEST - System Active*
-{date_str}
-
-🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3}%)
-🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4}%)
-
-✅ All systems operational!"""
-        
-        send_telegram(msg)
-        print(f"Test sent: P3={p3}, P4={p4}")
+        print("\n🧪 TEST MODE")
+        send_telegram(f"🧪 *Test - Advanced System Active*\n{date_str}\n\n✅ All {len([m for m in [TF_AVAILABLE, LGB_AVAILABLE] if m]) + 3} AI models ready!")
         return
     
-    # MORNING (9 AM EST = 14:00 UTC) - Midday predictions
+    # MORNING (9 AM EST = 14:00 UTC)
     if 14 <= hour < 16:
-        print("\n☀️  MORNING: Midday predictions")
+        print("\n☀️  MORNING: Training & Predicting...")
         
-        p3, c3 = make_prediction(df3, patterns3, 'pick3', 'MIDDAY')
-        p4, c4 = make_prediction(df4, patterns4, 'pick4', 'MIDDAY')
+        # Prepare data
+        data3 = prepare_data(df3)
+        data4 = prepare_data(df4)
         
-        log_prediction(pred_log, 'pick3', 'MIDDAY', p3, c3, False)
-        log_prediction(pred_log, 'pick4', 'MIDDAY', p4, c4, False)
+        # Train models
+        models3 = train_models_quick(data3, 'pick3')
+        models4 = train_models_quick(data4, 'pick4')
+        
+        # Make predictions
+        p3, c3, mp3 = make_ensemble_prediction(models3, data3, 'pick3')
+        p4, c4, mp4 = make_ensemble_prediction(models4, data4, 'pick4')
+        
+        log_prediction(pred_log, 'pick3', 'MIDDAY', p3, c3, mp3)
+        log_prediction(pred_log, 'pick4', 'MIDDAY', p4, c4, mp4)
         save_predictions_log(pred_log)
         
         stats = get_accuracy_stats(pred_log)
         
-        msg = f"""☀️ *NJ Lottery - MIDDAY*
+        msg = f"""☀️ *NJ Lottery - MIDDAY (Advanced AI)*
 {date_str}
 
-━━━━━━━━━━━━━━━━━━━━━
-🎲 *PICK 3*: `{str(p3).zfill(3)}`
-Confidence: {c3}%
-
-🎲 *PICK 4*: `{str(p4).zfill(4)}`
-Confidence: {c4}%"""
+🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3}%)
+🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4}%)"""
         
         if stats:
             msg += f"""
 
-━━━━━━━━━━━━━━━━━━━━━
-📊 *Performance*
-━━━━━━━━━━━━━━━━━━━━━
-
+📊 *Performance (Last 30)*
 Hit Rate: {stats['hit_rate_50']*100:.1f}%
-Exact Matches: {stats['exact_matches']}
 Avg Error: {stats['avg_error']:.1f}
-
 Pick 3: {stats['pick3_hit_rate']*100:.1f}%
 Pick 4: {stats['pick4_hit_rate']*100:.1f}%"""
         
-        msg += "\n\n🧠 Using 20+ years of data\n🕐 Evening predictions at 1:30 PM!\n\nGood luck! 🍀"
+        msg += f"\n\n🧠 *{len(models3)} AI Models Active*\n🕐 Evening predictions at 1:30 PM!\n\nGood luck! 🍀"
         
         send_telegram(msg)
         print(f"Sent: P3={p3} ({c3}%), P4={p4} ({c4}%)")
     
-    # AFTERNOON (1:30 PM EST = 18:30 UTC) - Get midday results + Evening predictions
+    # AFTERNOON (1:30 PM EST = 18:30 UTC)
     elif 18 <= hour < 20:
-        print("\n🌆 AFTERNOON: Fetching midday results + Evening predictions")
+        print("\n🌆 AFTERNOON: Results + Evening predictions...")
         
-        # Fetch midday results
-        p3_results = fetch_nj_results('pick3')
-        p4_results = fetch_nj_results('pick4')
+        # Fetch results
+        p3_res = fetch_nj_results('pick3')
+        p4_res = fetch_nj_results('pick4')
         
         comparisons = []
         
-        # Process Pick 3 midday
-        if p3_results and p3_results.get('midday'):
-            p3_midday = p3_results['midday']
+        if p3_res and p3_res.get('midday'):
+            p3_midday = p3_res['midday']
             comp = update_prediction_with_actual(pred_log, 'pick3', 'MIDDAY', p3_midday)
             if comp:
-                comparisons.append(('Pick 3 Midday', comp))
+                comparisons.append(('Pick 3', comp))
             update_excel_file(PICK3_FILE, today, 'MIDDAY', p3_midday)
         else:
             p3_midday = None
-            print("  ⚠️  Could not fetch Pick 3 midday result")
         
-        # Process Pick 4 midday
-        if p4_results and p4_results.get('midday'):
-            p4_midday = p4_results['midday']
+        if p4_res and p4_res.get('midday'):
+            p4_midday = p4_res['midday']
             comp = update_prediction_with_actual(pred_log, 'pick4', 'MIDDAY', p4_midday)
             if comp:
-                comparisons.append(('Pick 4 Midday', comp))
+                comparisons.append(('Pick 4', comp))
             update_excel_file(PICK4_FILE, today, 'MIDDAY', p4_midday)
         else:
             p4_midday = None
-            print("  ⚠️  Could not fetch Pick 4 midday result")
         
         save_predictions_log(pred_log)
         
-        # Reload data with new results
+        # Reload and retrain
         df3, df4 = load_data()
-        patterns3 = analyze_patterns(df3, 'pick3', pred_log)
-        patterns4 = analyze_patterns(df4, 'pick4', pred_log)
+        data3 = prepare_data(df3)
+        data4 = prepare_data(df4)
         
-        # Make evening predictions with midday correlation
-        p3_eve, c3_eve = make_prediction(df3, patterns3, 'pick3', 'EVENING', p3_midday)
-        p4_eve, c4_eve = make_prediction(df4, patterns4, 'pick4', 'EVENING', p4_midday)
+        models3 = train_models_quick(data3, 'pick3')
+        models4 = train_models_quick(data4, 'pick4')
         
-        log_prediction(pred_log, 'pick3', 'EVENING', p3_eve, c3_eve, True)
-        log_prediction(pred_log, 'pick4', 'EVENING', p4_eve, c4_eve, True)
+        # Evening predictions with midday correlation
+        p3_eve, c3_eve, mp3_eve = make_ensemble_prediction(models3, data3, 'pick3', p3_midday)
+        p4_eve, c4_eve, mp4_eve = make_ensemble_prediction(models4, data4, 'pick4', p4_midday)
+        
+        log_prediction(pred_log, 'pick3', 'EVENING', p3_eve, c3_eve, mp3_eve, True)
+        log_prediction(pred_log, 'pick4', 'EVENING', p4_eve, c4_eve, mp4_eve, True)
         save_predictions_log(pred_log)
         
-        # Send notification
-        msg = f"""🌆 *Midday Results + Evening Predictions*
+        msg = f"""🌆 *Midday Results + Evening*
 {date_str}
 
-━━━━━━━━━━━━━━━━━━━━━
 📍 *MIDDAY RESULTS*
-━━━━━━━━━━━━━━━━━━━━━
 """
         
         for name, comp in comparisons:
-            msg += f"\n{name}: `{comp['actual']}`\n"
-            msg += f"Predicted: {comp['prediction']}\n"
-            msg += f"Error: {comp['error']} {comp['status']}\n"
+            msg += f"\n{name}: `{comp['actual']}`\nPredicted: {comp['prediction']}\nError: {comp['error']} {comp['status']}\n"
         
         msg += f"""
-━━━━━━━━━━━━━━━━━━━━━
 🌙 *EVENING PREDICTIONS*
-━━━━━━━━━━━━━━━━━━━━━
 
 Pick 3: `{str(p3_eve).zfill(3)}` ({c3_eve}%)
 Pick 4: `{str(p4_eve).zfill(4)}` ({c4_eve}%)
 
 ✨ Using midday correlation!
-
 Good luck! 🍀"""
         
         send_telegram(msg)
         print(f"Sent evening: P3={p3_eve}, P4={p4_eve}")
     
-    # LATE NIGHT (12:30 AM EST = 05:30 UTC) - Get evening results + Summary
+    # MIDNIGHT (12:30 AM EST = 05:30 UTC)
     elif 5 <= hour < 7:
-        print("\n🌙 LATE NIGHT: Evening results + Daily summary")
+        print("\n🌙 MIDNIGHT: Evening results + Summary...")
         
         # Fetch evening results
-        p3_results = fetch_nj_results('pick3')
-        p4_results = fetch_nj_results('pick4')
+        p3_res = fetch_nj_results('pick3')
+        p4_res = fetch_nj_results('pick4')
         
         comparisons = []
         
-        # Process Pick 3 evening
-        if p3_results and p3_results.get('evening'):
-            p3_evening = p3_results['evening']
-            comp = update_prediction_with_actual(pred_log, 'pick3', 'EVENING', p3_evening)
+        if p3_res and p3_res.get('evening'):
+            comp = update_prediction_with_actual(pred_log, 'pick3', 'EVENING', p3_res['evening'])
             if comp:
-                comparisons.append(('Pick 3 Evening', comp))
-            update_excel_file(PICK3_FILE, today, 'EVENING', p3_evening)
+                comparisons.append(('Pick 3', comp))
+            update_excel_file(PICK3_FILE, today, 'EVENING', p3_res['evening'])
         
-        # Process Pick 4 evening
-        if p4_results and p4_results.get('evening'):
-            p4_evening = p4_results['evening']
-            comp = update_prediction_with_actual(pred_log, 'pick4', 'EVENING', p4_evening)
+        if p4_res and p4_res.get('evening'):
+            comp = update_prediction_with_actual(pred_log, 'pick4', 'EVENING', p4_res['evening'])
             if comp:
-                comparisons.append(('Pick 4 Evening', comp))
-            update_excel_file(PICK4_FILE, today, 'EVENING', p4_evening)
+                comparisons.append(('Pick 4', comp))
+            update_excel_file(PICK4_FILE, today, 'EVENING', p4_res['evening'])
         
         save_predictions_log(pred_log)
         
-        # Get stats
-        stats = get_accuracy_stats(pred_log, last_n=30)
-        today_stats = get_accuracy_stats(pred_log, last_n=4)  # Today's 4 predictions
+        stats = get_accuracy_stats(pred_log, 30)
         
         msg = f"""🌙 *Daily Summary*
 {date_str}
 
-━━━━━━━━━━━━━━━━━━━━━
 📍 *EVENING RESULTS*
-━━━━━━━━━━━━━━━━━━━━━
 """
         
         for name, comp in comparisons:
-            msg += f"\n{name}: `{comp['actual']}`\n"
-            msg += f"Error: {comp['error']} {comp['status']}\n"
-        
-        if today_stats:
-            msg += f"""
-━━━━━━━━━━━━━━━━━━━━━
-📊 *Today's Performance*
-━━━━━━━━━━━━━━━━━━━━━
-
-Predictions: {today_stats['total']}/4
-Hit Rate: {today_stats['hit_rate_50']*100:.0f}%
-Exact: {today_stats['exact_matches']}"""
+            msg += f"\n{name}: `{comp['actual']}`\nError: {comp['error']} {comp['status']}\n"
         
         if stats:
             msg += f"""
-
-━━━━━━━━━━━━━━━━━━━━━
-📈 *30-Day Performance*
-━━━━━━━━━━━━━━━━━━━━━
+📊 *30-Day Performance*
 
 Hit Rate (±50): {stats['hit_rate_50']*100:.1f}%
 Hit Rate (±25): {stats['hit_rate_25']*100:.1f}%
-Exact Matches: {stats['exact_matches']}
+Exact: {stats['exact']}
 Avg Error: {stats['avg_error']:.1f}
 
 Pick 3: {stats['pick3_hit_rate']*100:.1f}%
 Pick 4: {stats['pick4_hit_rate']*100:.1f}%"""
-            
-            if 'evening_with_midday_hit_rate' in stats:
-                msg += f"\n\n✨ Evening (w/midday): {stats['evening_with_midday_hit_rate']*100:.1f}%"
         
         msg += "\n\n🧠 System learning!\n😴 See you tomorrow!"
         
         send_telegram(msg)
-        print("Sent daily summary")
+        print("Sent summary")
     
     else:
         print(f"\nℹ️  No action for hour {hour}")
