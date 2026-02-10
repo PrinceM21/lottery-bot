@@ -24,7 +24,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FORCE_TEST: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: python3 lottery_predictor_advanced_github.py
+        run: python3 lottery_predictor.py
       
       - name: Commit logs
         run: |
