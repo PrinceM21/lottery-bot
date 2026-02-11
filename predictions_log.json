@@ -58,11 +58,11 @@
       "RandomForest": 380
     },
     "used_midday_data": false,
-    "actual": null,
-    "error": null,
-    "hit_50": null,
-    "hit_25": null,
-    "exact": null
+    "actual": 500,
+    "error": 37,
+    "hit_50": true,
+    "hit_25": false,
+    "exact": false
   },
   {
     "date": "2026-02-11",
@@ -79,6 +79,50 @@
       "RandomForest": 8504
     },
     "used_midday_data": false,
+    "actual": 1234,
+    "error": 5404,
+    "hit_50": false,
+    "hit_25": false,
+    "exact": false
+  },
+  {
+    "date": "2026-02-11",
+    "timestamp": "2026-02-11 20:02:22",
+    "game": "pick3",
+    "draw_time": "EVENING",
+    "prediction": 413,
+    "confidence": 91,
+    "model_predictions": {
+      "LSTM": 496,
+      "GRU": 491,
+      "XGBoost": 360,
+      "LightGBM": 255,
+      "RandomForest": 376,
+      "Midday": 500
+    },
+    "used_midday_data": true,
+    "actual": null,
+    "error": null,
+    "hit_50": null,
+    "hit_25": null,
+    "exact": null
+  },
+  {
+    "date": "2026-02-11",
+    "timestamp": "2026-02-11 20:02:22",
+    "game": "pick4",
+    "draw_time": "EVENING",
+    "prediction": 3116,
+    "confidence": 81,
+    "model_predictions": {
+      "LSTM": 4996,
+      "GRU": 4995,
+      "XGBoost": 2137,
+      "LightGBM": 2152,
+      "RandomForest": 3180,
+      "Midday": 1234
+    },
+    "used_midday_data": true,
     "actual": null,
     "error": null,
     "hit_50": null,
