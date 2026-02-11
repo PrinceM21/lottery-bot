@@ -42,5 +42,47 @@
     "hit_50": null,
     "hit_25": null,
     "exact": null
+  },
+  {
+    "date": "2026-02-11",
+    "timestamp": "2026-02-11 15:16:36",
+    "game": "pick3",
+    "draw_time": "MIDDAY",
+    "prediction": 463,
+    "confidence": 91,
+    "model_predictions": {
+      "LSTM": 497,
+      "GRU": 498,
+      "XGBoost": 437,
+      "LightGBM": 458,
+      "RandomForest": 380
+    },
+    "used_midday_data": false,
+    "actual": null,
+    "error": null,
+    "hit_50": null,
+    "hit_25": null,
+    "exact": null
+  },
+  {
+    "date": "2026-02-11",
+    "timestamp": "2026-02-11 15:16:36",
+    "game": "pick4",
+    "draw_time": "MIDDAY",
+    "prediction": 6638,
+    "confidence": 67,
+    "model_predictions": {
+      "LSTM": 5018,
+      "GRU": 5014,
+      "XGBoost": 8421,
+      "LightGBM": 8045,
+      "RandomForest": 8504
+    },
+    "used_midday_data": false,
+    "actual": null,
+    "error": null,
+    "hit_50": null,
+    "hit_25": null,
+    "exact": null
   }
 ]
