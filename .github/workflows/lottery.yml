@@ -16,7 +16,7 @@ jobs:
           python-version: '3.10'
       
       - name: Install dependencies
-        run: pip install pandas numpy openpyxl requests scikit-learn beautifulsoup4 tensorflow xgboost lightgbm
+        run: pip install pandas numpy openpyxl requests scikit-learn beautifulsoup4 tensorflow xgboost lightgbm catboost
       
       - name: Run predictions
         env:
@@ -29,13 +29,13 @@ jobs:
             echo "📝 Found todays_results.txt - updating Excel files..."
             python3 update_from_file.py
           fi
-          # Run predictions
+          # Run ultimate system
           python3 lottery_predictor.py
       
-      - name: Commit logs
+      - name: Commit updates
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add -f predictions_log.json final_merged_pick3_lottery_data.xlsx final_merged_pick4_lottery_data.xlsx || true
-          git commit -m "Update predictions and data" || true
+          git add -f predictions_log.json discovered_patterns.json final_merged_pick3_lottery_data.xlsx final_merged_pick4_lottery_data.xlsx || true
+          git commit -m "Update predictions, patterns, and data" || true
           git push || true
