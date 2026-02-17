@@ -2,9 +2,9 @@ name: NJ Lottery Ultimate System
 
 on:
   schedule:
-    - cron: '0 14 * * *'   # 9:00 AM EST (14:00 UTC)
-    - cron: '30 18 * * *'  # 1:30 PM EST (18:30 UTC)
-    - cron: '30 5 * * *'   # 12:30 AM EST (05:30 UTC)
+    - cron: '0 14 * * *'   # 9:00 AM EST - Morning predictions
+    - cron: '0 19 * * *'   # 2:00 PM EST - Fetch midday results + evening predictions (moved 30 min later!)
+    - cron: '0 5 * * *'    # 12:00 AM EST - Fetch evening results + summary (moved 30 min earlier!)
   workflow_dispatch:
 
 jobs:
@@ -24,12 +24,19 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FORCE_TEST: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: python3 lottery_predictor.py
+        run: |
+          # Check if manual results file exists and process it
+          if [ -f "todays_results.txt" ]; then
+            echo "📝 Found todays_results.txt - updating Excel files..."
+            python3 update_from_file.py
+          fi
+          # Run predictions
+          python3 lottery_bot_input.py
       
       - name: Commit logs
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add -f predictions_log.json || true
-          git commit -m "Update predictions" || true
+          git add -f predictions_log.json final_merged_pick3_lottery_data.xlsx final_merged_pick4_lottery_data.xlsx || true
+          git commit -m "Update predictions and data" || true
           git push || true
