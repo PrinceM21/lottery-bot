@@ -382,33 +382,102 @@ def get_stats(log):
     }
 
 # ============================================================================
-# MAIN - MORNING MODE (9 AM)
+# MAIN - MORNING MODE (10 AM)
 # ============================================================================
 
-def morning_predictions():
-    """Make morning predictions without asking for input"""
-    print("\n☀️  MORNING: Making midday predictions...")
+def morning_results_and_predictions():
+    """Ask for LAST NIGHT's evening results, then make MIDDAY predictions"""
+    print("\n☀️  MORNING: Asking for last night's results...")
     
+    now = datetime.now()
+    yesterday = now - pd.Timedelta(days=1)
+    date_str = yesterday.strftime('%Y-%m-%d')
+    display_date = yesterday.strftime('%A, %B %d, %Y')
+    
+    log = load_log()
+    
+    # Greet user
+    send_message(f"☀️ *Good morning!*\n\nLet's enter last night's results first!")
+    time.sleep(2)
+    
+    # Get Pick 3 Evening (from LAST NIGHT)
+    p3_evening = None
+    attempts = 0
+    while p3_evening is None and attempts < 3:
+        reply = wait_for_reply(f"🌙 What was *PICK 3 EVENING* last night?\n({display_date})\n\n_(Enter 3 digits, e.g. 789)_")
+        
+        if reply is None:
+            send_message("⏰ Skipping Pick 3 Evening - no reply received.")
+            break
+        
+        p3_evening = validate_number(reply, 3)
+        attempts += 1
+        
+        if p3_evening is None:
+            send_message(f"❌ Invalid! Enter exactly 3 digits!\n_(Attempt {attempts}/3)_")
+    
+    # Get Pick 4 Evening (from LAST NIGHT)
+    p4_evening = None
+    attempts = 0
+    while p4_evening is None and attempts < 3:
+        reply = wait_for_reply(f"🌙 What was *PICK 4 EVENING* last night?\n({display_date})\n\n_(Enter 4 digits, e.g. 4567)_")
+        
+        if reply is None:
+            send_message("⏰ Skipping Pick 4 Evening - no reply received.")
+            break
+        
+        p4_evening = validate_number(reply, 4)
+        attempts += 1
+        
+        if p4_evening is None:
+            send_message(f"❌ Invalid! Enter exactly 4 digits!\n_(Attempt {attempts}/3)_")
+    
+    # Save YESTERDAY's evening results to Excel
+    if p3_evening:
+        save_result(PICK3_FILE, date_str, 'EVENING', p3_evening)
+    if p4_evening:
+        save_result(PICK4_FILE, date_str, 'EVENING', p4_evening)
+    
+    # Update log with actual results from YESTERDAY
+    status_p3 = status_p4 = ""
+    comp_p3 = comp_p4 = None
+    
+    if p3_evening:
+        _, status_p3 = update_log_with_actual(log, 'pick3', 'EVENING', p3_evening)
+        for entry in reversed(log):
+            if entry['date'] == date_str and entry['game'] == 'pick3' and entry['draw_time'] == 'EVENING':
+                comp_p3 = entry
+                break
+    
+    if p4_evening:
+        _, status_p4 = update_log_with_actual(log, 'pick4', 'EVENING', p4_evening)
+        for entry in reversed(log):
+            if entry['date'] == date_str and entry['game'] == 'pick4' and entry['draw_time'] == 'EVENING':
+                comp_p4 = entry
+                break
+    
+    save_log(log)
+    
+    # Reload data with last night's results
     df3, df4 = load_data()
     if df3 is None:
         send_message("❌ Error loading data!")
         return
     
-    log = load_log()
-    now = datetime.now()
-    date_str = now.strftime('%Y-%m-%d')
-    display_date = now.strftime('%A, %B %d, %Y')
+    # Now make TODAY's MIDDAY predictions
+    today = now.strftime('%Y-%m-%d')
+    today_display = now.strftime('%A, %B %d, %Y')
     
-    p3, c3, mp3 = train_and_predict(df3, 'pick3')
-    p4, c4, mp4 = train_and_predict(df4, 'pick4')
+    p3_midday, c3_midday, mp3 = train_and_predict(df3, 'pick3')
+    p4_midday, c4_midday, mp4 = train_and_predict(df4, 'pick4')
     
-    # Log predictions
+    # Log today's midday predictions
     log.append({
-        'date': date_str,
+        'date': today,
         'game': 'pick3',
         'draw_time': 'MIDDAY',
-        'prediction': p3,
-        'confidence': c3,
+        'prediction': p3_midday,
+        'confidence': c3_midday,
         'actual': None,
         'error': None,
         'hit_50': None,
@@ -416,11 +485,11 @@ def morning_predictions():
         'exact': None
     })
     log.append({
-        'date': date_str,
+        'date': today,
         'game': 'pick4',
         'draw_time': 'MIDDAY',
-        'prediction': p4,
-        'confidence': c4,
+        'prediction': p4_midday,
+        'confidence': c4_midday,
         'actual': None,
         'error': None,
         'hit_50': None,
@@ -429,25 +498,36 @@ def morning_predictions():
     })
     save_log(log)
     
+    # Get 30-day stats
     stats = get_stats(log)
     
-    msg = f"""☀️ *NJ Lottery - MIDDAY Predictions*
-{display_date}
-
-🎲 *PICK 3*: `{str(p3).zfill(3)}` ({c3}%)
-🎲 *PICK 4*: `{str(p4).zfill(4)}` ({c4}%)"""
-
+    # Build message
+    msg = f"✅ *Last night's results saved!*\n\n"
+    
+    if comp_p3 and p3_evening:
+        msg += f"Pick 3: `{str(p3_evening).zfill(3)}`\n"
+        msg += f"Predicted: {str(comp_p3['prediction']).zfill(3)}\n"
+        msg += f"Error: {comp_p3['error']} {status_p3}\n\n"
+    
+    if comp_p4 and p4_evening:
+        msg += f"Pick 4: `{str(p4_evening).zfill(4)}`\n"
+        msg += f"Predicted: {str(comp_p4['prediction']).zfill(4)}\n"
+        msg += f"Error: {comp_p4['error']} {status_p4}\n\n"
+    
+    msg += f"{'='*30}\n\n"
+    msg += f"☀️ *TODAY's MIDDAY Predictions*\n{today_display}\n\n"
+    msg += f"🎲 *PICK 3*: `{str(p3_midday).zfill(3)}` ({c3_midday}%)\n"
+    msg += f"🎲 *PICK 4*: `{str(p4_midday).zfill(4)}` ({c4_midday}%)\n"
+    
     if stats:
-        msg += f"""
-
-📊 *Performance*
-Hit Rate: {stats['hit_rate']*100:.1f}%
-Avg Error: {stats['avg_error']:.1f}"""
-
-    msg += "\n\n🕐 *I'll ask for results at 2 PM!*\n\nGood luck! 🍀"
+        msg += f"\n📊 *30-Day Stats*\n"
+        msg += f"Hit Rate: {stats['hit_rate']*100:.1f}%\n"
+        msg += f"Avg Error: {stats['avg_error']:.1f}\n"
+    
+    msg += f"\n🕐 *I'll ask for midday results at 2 PM!*\n\nGood luck! 🍀"
     
     send_message(msg)
-    print(f"✅ Sent morning predictions")
+    print(f"✅ Sent morning update with last night's results + today's predictions")
 
 # ============================================================================
 # MAIN - AFTERNOON MODE (2 PM)
@@ -589,114 +669,6 @@ Good luck! 🍀"""
     print("✅ Sent afternoon update")
 
 # ============================================================================
-# MAIN - MIDNIGHT MODE (12 AM)
-# ============================================================================
-
-def midnight_results():
-    """Ask for evening results and send summary"""
-    print("\n🌙 MIDNIGHT: Asking for evening results...")
-    
-    now = datetime.now()
-    date_str = now.strftime('%Y-%m-%d')
-    display_date = now.strftime('%A, %B %d, %Y')
-    
-    log = load_log()
-    
-    send_message(f"🌙 *Evening Results Time!*\n{display_date}")
-    time.sleep(2)
-    
-    # Get Pick 3 Evening
-    p3_evening = None
-    attempts = 0
-    while p3_evening is None and attempts < 3:
-        reply = wait_for_reply("🎲 What was today's *PICK 3 EVENING* number?\n\n_(Enter 3 digits, e.g. 789)_")
-        
-        if reply is None:
-            send_message("⏰ Skipping Pick 3 Evening - no reply received.")
-            break
-        
-        p3_evening = validate_number(reply, 3)
-        attempts += 1
-        
-        if p3_evening is None:
-            send_message(f"❌ Invalid! Please enter exactly 3 digits!\n_(Attempt {attempts}/3)_")
-    
-    # Get Pick 4 Evening
-    p4_evening = None
-    attempts = 0
-    while p4_evening is None and attempts < 3:
-        reply = wait_for_reply("🎲 What was today's *PICK 4 EVENING* number?\n\n_(Enter 4 digits, e.g. 4567)_")
-        
-        if reply is None:
-            send_message("⏰ Skipping Pick 4 Evening - no reply received.")
-            break
-        
-        p4_evening = validate_number(reply, 4)
-        attempts += 1
-        
-        if p4_evening is None:
-            send_message(f"❌ Invalid! Please enter exactly 4 digits!\n_(Attempt {attempts}/3)_")
-    
-    # Save to Excel
-    if p3_evening:
-        save_result(PICK3_FILE, date_str, 'EVENING', p3_evening)
-    if p4_evening:
-        save_result(PICK4_FILE, date_str, 'EVENING', p4_evening)
-    
-    # Update log
-    status_p3 = status_p4 = ""
-    comp_p3 = comp_p4 = None
-    
-    if p3_evening:
-        _, status_p3 = update_log_with_actual(log, 'pick3', 'EVENING', p3_evening)
-        for entry in reversed(log):
-            if entry['date'] == date_str and entry['game'] == 'pick3' and entry['draw_time'] == 'EVENING':
-                comp_p3 = entry
-                break
-    
-    if p4_evening:
-        _, status_p4 = update_log_with_actual(log, 'pick4', 'EVENING', p4_evening)
-        for entry in reversed(log):
-            if entry['date'] == date_str and entry['game'] == 'pick4' and entry['draw_time'] == 'EVENING':
-                comp_p4 = entry
-                break
-    
-    save_log(log)
-    
-    # Stats
-    stats = get_stats(log)
-    
-    # Send summary
-    msg = f"""🌙 *Daily Summary*
-{display_date}
-
-📍 *EVENING RESULTS*
-"""
-    
-    if comp_p3 and p3_evening:
-        msg += f"\nPick 3: `{str(p3_evening).zfill(3)}`"
-        msg += f"\nPredicted: {str(comp_p3['prediction']).zfill(3)}"
-        msg += f"\nError: {comp_p3['error']} {status_p3}\n"
-    
-    if comp_p4 and p4_evening:
-        msg += f"\nPick 4: `{str(p4_evening).zfill(4)}`"
-        msg += f"\nPredicted: {str(comp_p4['prediction']).zfill(4)}"
-        msg += f"\nError: {comp_p4['error']} {status_p4}\n"
-    
-    if stats:
-        msg += f"""
-📊 *30-Day Performance*
-
-Hit Rate (±50): {stats['hit_rate']*100:.1f}%
-Avg Error: {stats['avg_error']:.1f}
-Total Predictions: {stats['total']}"""
-    
-    msg += "\n\n🧠 System learning!\n😴 See you tomorrow!"
-    
-    send_message(msg)
-    print("✅ Sent midnight summary")
-
-# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -713,20 +685,16 @@ def main():
     
     if force_test:
         print("\n🧪 TEST MODE")
-        send_message("🧪 *Bot Input System - Active!*\n\nI'll ask you for results automatically at:\n🕘 9:00 AM - Morning predictions\n🕐 2:00 PM - Midday results + Evening predictions\n🕛 12:00 AM - Evening results + Summary\n\n✅ All systems ready!")
+        send_message("🧪 *Bot Input System - Active!*\n\nI'll ask you for results automatically at:\n\n🕙 10:00 AM - Last night's results + Midday predictions\n🕐 2:00 PM - Midday results + Evening predictions\n\n✅ All systems ready!")
         return
     
-    # 9 AM EST = 14 UTC
-    if 14 <= hour < 16:
-        morning_predictions()
+    # 10 AM EST = 15 UTC
+    if 15 <= hour < 17:
+        morning_results_and_predictions()
     
     # 2 PM EST = 19 UTC
     elif 19 <= hour < 21:
         afternoon_results_and_predictions()
-    
-    # 12 AM EST = 5 UTC
-    elif 5 <= hour < 6:
-        midnight_results()
     
     else:
         print(f"\nNo action for hour {hour}")
