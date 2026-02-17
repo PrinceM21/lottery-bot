@@ -77,43 +77,56 @@ def get_updates(offset=None):
         print(f"Update error: {e}")
         return None
 
-def wait_for_reply(prompt, timeout=120):
+def wait_for_reply(prompt, timeout=3600):
     """
     Send a prompt and wait for user reply
-    timeout: seconds to wait
+    - Sends reminder at 30 minutes
+    - Stops after 1 hour (3600 seconds)
     """
     print(f"\n📱 Asking: {prompt}")
     send_message(prompt)
     
-    # Get current update ID to only look for NEW messages
+    # Get current update ID
     updates = get_updates()
     last_id = 0
     if updates and updates.get('result'):
         for u in updates['result']:
             last_id = max(last_id, u['update_id'])
     
-    # Wait for reply
     start_time = time.time()
+    reminder_sent = False
+    
     while time.time() - start_time < timeout:
-        time.sleep(3)
+        elapsed = time.time() - start_time
+        time.sleep(5)
         
+        # Send reminder at 30 minutes
+        if elapsed >= 1800 and not reminder_sent:
+            send_message(
+                "⏰ *Reminder!*\n\n" + prompt +
+                "\n\n_You have 30 minutes left before this is skipped!_"
+            )
+            reminder_sent = True
+            print("   Sent 30-min reminder")
+        
+        # Check for new messages
         new_updates = get_updates(offset=last_id + 1)
         
         if new_updates and new_updates.get('result'):
             for update in new_updates['result']:
                 last_id = update['update_id']
                 
-                # Check if message is from our chat
                 if 'message' in update:
                     msg = update['message']
                     
-                    # Check if from correct chat
                     if str(msg.get('chat', {}).get('id', '')) == str(CHAT_ID):
                         text = msg.get('text', '').strip()
                         print(f"   Got reply: {text}")
                         return text
     
-    print(f"   Timeout! No reply in {timeout} seconds")
+    # Timed out after 1 hour
+    send_message("⏰ *No reply received in 1 hour.*\n\nSkipping result entry for now.\n\n_You can enter results tomorrow or the system will ask again next time!_")
+    print("   Timed out after 1 hour!")
     return None
 
 def validate_number(text, digits):
@@ -456,31 +469,35 @@ def afternoon_results_and_predictions():
     
     # Get Pick 3 Midday
     p3_midday = None
-    while p3_midday is None:
+    attempts = 0
+    while p3_midday is None and attempts < 3:
         reply = wait_for_reply("🎲 What was today's *PICK 3 MIDDAY* number?\n\n_(Enter 3 digits, e.g. 534)_")
         
         if reply is None:
-            send_message("⏰ No reply received. Skipping result entry.")
+            send_message("⏰ Skipping Pick 3 Midday - no reply received.")
             break
         
         p3_midday = validate_number(reply, 3)
+        attempts += 1
         
         if p3_midday is None:
-            send_message(f"❌ Invalid number '{reply}'. Please enter exactly 3 digits!")
+            send_message(f"❌ Invalid number '{reply}'. Please enter exactly 3 digits!\n_(Attempt {attempts}/3)_")
     
     # Get Pick 4 Midday
     p4_midday = None
-    while p4_midday is None:
+    attempts = 0
+    while p4_midday is None and attempts < 3:
         reply = wait_for_reply("🎲 What was today's *PICK 4 MIDDAY* number?\n\n_(Enter 4 digits, e.g. 3891)_")
         
         if reply is None:
-            send_message("⏰ No reply received. Skipping result entry.")
+            send_message("⏰ Skipping Pick 4 Midday - no reply received.")
             break
         
         p4_midday = validate_number(reply, 4)
+        attempts += 1
         
         if p4_midday is None:
-            send_message(f"❌ Invalid number '{reply}'. Please enter exactly 4 digits!")
+            send_message(f"❌ Invalid number '{reply}'. Please enter exactly 4 digits!\n_(Attempt {attempts}/3)_")
     
     # Save results to Excel
     if p3_midday:
@@ -590,31 +607,35 @@ def midnight_results():
     
     # Get Pick 3 Evening
     p3_evening = None
-    while p3_evening is None:
+    attempts = 0
+    while p3_evening is None and attempts < 3:
         reply = wait_for_reply("🎲 What was today's *PICK 3 EVENING* number?\n\n_(Enter 3 digits, e.g. 789)_")
         
         if reply is None:
-            send_message("⏰ No reply received. Skipping.")
+            send_message("⏰ Skipping Pick 3 Evening - no reply received.")
             break
         
         p3_evening = validate_number(reply, 3)
+        attempts += 1
         
         if p3_evening is None:
-            send_message(f"❌ Invalid! Please enter exactly 3 digits!")
+            send_message(f"❌ Invalid! Please enter exactly 3 digits!\n_(Attempt {attempts}/3)_")
     
     # Get Pick 4 Evening
     p4_evening = None
-    while p4_evening is None:
+    attempts = 0
+    while p4_evening is None and attempts < 3:
         reply = wait_for_reply("🎲 What was today's *PICK 4 EVENING* number?\n\n_(Enter 4 digits, e.g. 4567)_")
         
         if reply is None:
-            send_message("⏰ No reply received. Skipping.")
+            send_message("⏰ Skipping Pick 4 Evening - no reply received.")
             break
         
         p4_evening = validate_number(reply, 4)
+        attempts += 1
         
         if p4_evening is None:
-            send_message(f"❌ Invalid! Please enter exactly 4 digits!")
+            send_message(f"❌ Invalid! Please enter exactly 4 digits!\n_(Attempt {attempts}/3)_")
     
     # Save to Excel
     if p3_evening:
