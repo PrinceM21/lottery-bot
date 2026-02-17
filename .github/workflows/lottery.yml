@@ -2,9 +2,8 @@ name: NJ Lottery Ultimate System
 
 on:
   schedule:
-    - cron: '0 14 * * *'   # 9:00 AM EST - Morning predictions
-    - cron: '0 19 * * *'   # 2:00 PM EST - Fetch midday results + evening predictions (moved 30 min later!)
-    - cron: '0 5 * * *'    # 12:00 AM EST - Fetch evening results + summary (moved 30 min earlier!)
+    - cron: '0 15 * * *'   # 10:00 AM EST (15:00 UTC) - Last night's results + Midday predictions
+    - cron: '0 19 * * *'   # 2:00 PM EST (19:00 UTC) - Midday results + Evening predictions
   workflow_dispatch:
 
 jobs:
