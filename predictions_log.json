@@ -800,12 +800,12 @@
       558,
       599
     ],
-    "actual": null,
-    "error": null,
-    "hit_50": null,
-    "hit_25": null,
-    "exact": null,
-    "box_match": null
+    "actual": 679,
+    "error": 397,
+    "hit_50": false,
+    "hit_25": false,
+    "exact": false,
+    "box_match": false
   },
   {
     "date": "2026-02-20",
@@ -819,6 +819,46 @@
       942,
       941,
       940
+    ],
+    "actual": 4967,
+    "error": 2227,
+    "hit_50": false,
+    "hit_25": false,
+    "exact": false,
+    "box_match": false
+  },
+  {
+    "date": "2026-02-20",
+    "game": "pick3",
+    "draw_time": "EVENING",
+    "prediction": 595,
+    "confidence": 94,
+    "top5": [
+      671,
+      678,
+      679,
+      510,
+      494
+    ],
+    "actual": null,
+    "error": null,
+    "hit_50": null,
+    "hit_25": null,
+    "exact": null,
+    "box_match": null
+  },
+  {
+    "date": "2026-02-20",
+    "game": "pick4",
+    "draw_time": "EVENING",
+    "prediction": 4823,
+    "confidence": 95,
+    "top5": [
+      4966,
+      4967,
+      4968,
+      4992,
+      4410
     ],
     "actual": null,
     "error": null,
