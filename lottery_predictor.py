@@ -1,182 +1,177 @@
 #!/usr/bin/env python3
 """
-🎓 ACADEMICALLY CORRECT NJ LOTTERY PREDICTION SYSTEM (V2)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 NJ LOTTERY: LSTM + XGBOOST WITH SELF-LEARNING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-V2 fixes remaining issues from V1:
-✅ Removes remaining leakage (target-derived stats shifted or excluded)
-✅ Correct historic Midday→Evening feature join (per-date, not constant)
-✅ Beam-search Top-K (fast; no enumerating 10,000 numbers per row)
-✅ XGBoost forced 10-class multiclass (stable log-loss)
-✅ Proper chronological train/test split + scaler fit on train only
-✅ Proper ordering by Date + Draw Time everywhere (including saving)
-✅ Confidence is interpretable (Top1 prob share among TopK)
-
-Notes:
-- If the lottery is fair IID, models should not beat strong baselines.
-- This script provides a reproducible evaluation pipeline and a "next draw" prediction.
+Based on your original Colab code with:
+✅ LSTM model
+✅ XGBoost model  
+✅ Self-learning (adaptive weights)
+✅ Telegram bot
+✅ Auto-save to Excel
 """
 
 import os
 import time
-import warnings
+import json
 from datetime import datetime, timedelta
-from typing import List, Tuple, Optional, Dict
+from typing import Optional, List, Dict
 
 import numpy as np
 import pandas as pd
 import requests
 
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import accuracy_score, log_loss
-
 import xgboost as xgb
 
-warnings.filterwarnings("ignore")
+# Deep Learning
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+    from tensorflow.keras.callbacks import EarlyStopping
+    TF_AVAILABLE = True
+    
+    # GPU setup
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+except:
+    TF_AVAILABLE = False
+    print("⚠️  TensorFlow not available, will use XGBoost only")
 
-# ==============================
+import warnings
+warnings.filterwarnings('ignore')
+
+# ══════════════════════════════════════════════════════════════════════════
 # CONFIG
-# ==============================
+# ══════════════════════════════════════════════════════════════════════════
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-CHAT_ID = os.environ.get("CHAT_ID", "")
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+CHAT_ID = os.environ.get('CHAT_ID', '')
 
-PICK3_FILE = "final_merged_pick3_lottery_data.xlsx"
-PICK4_FILE = "final_merged_pick4_lottery_data.xlsx"
+PICK3_FILE = 'final_merged_pick3_lottery_data.xlsx'
+PICK4_FILE = 'final_merged_pick4_lottery_data.xlsx'
+WEIGHTS_FILE = 'learning_weights.json'
+PREDICTIONS_LOG = 'predictions_log.json'
 
 SEED = 42
 np.random.seed(SEED)
+if TF_AVAILABLE:
+    tf.random.set_seed(SEED)
 
-DRAW_ORDER = {"MIDDAY": 0, "EVENING": 1}
+# Model parameters
+SEQ_LENGTH = 50
+LEARNING_RATE = 0.1  # For weight adaptation
 
-LAGS = [1, 2, 3, 5, 7, 10]
-ROLL_WINDOWS = [5, 10, 20, 30]
-MIN_HISTORY_ROWS = 30
+print("="*80)
+print("🎯 LSTM + XGBOOST WITH SELF-LEARNING")
+print("="*80)
+print(f"TensorFlow: {'✅' if TF_AVAILABLE else '❌'}")
 
-TOPK = 5
-BEAM_WIDTH = 50  # speed vs exactness; 50 is plenty for Top5
+# ══════════════════════════════════════════════════════════════════════════
+# TELEGRAM
+# ══════════════════════════════════════════════════════════════════════════
 
-
-# ==============================
-# TELEGRAM (optional)
-# ==============================
-
-def send_message(msg: str, parse_mode: str = "Markdown"):
+def send_message(msg: str):
     if not BOT_TOKEN or not CHAT_ID:
         print(f"MSG: {msg}")
-        return None
+        return
     try:
-        r = requests.post(
+        requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": msg, "parse_mode": parse_mode},
-            timeout=10,
+            json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
         )
-        return r.json()
-    except Exception as e:
-        print(f"Telegram error: {e}")
-        return None
-
+    except:
+        pass
 
 def wait_for_reply(prompt: str, timeout: int = 3600) -> Optional[str]:
-    """
-    If BOT_TOKEN / CHAT_ID are missing, fallback to console input.
-    """
-    print(f"\n📱 Asking: {prompt}")
+    print(f"\n📱 {prompt}")
     send_message(prompt)
-
+    
     if not BOT_TOKEN or not CHAT_ID:
         try:
             return input("Reply: ").strip()
-        except Exception:
+        except:
             return None
-
-    # Telegram polling loop
+    
     try:
         updates = requests.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
-            params={"timeout": 30, "offset": None},
-            timeout=35,
+            params={"timeout": 30},
+            timeout=35
         ).json()
-    except Exception:
+    except:
         updates = None
-
+    
     last_id = 0
-    if updates and updates.get("result"):
-        for u in updates["result"]:
-            last_id = max(last_id, u["update_id"])
-
+    if updates and updates.get('result'):
+        for u in updates['result']:
+            last_id = max(last_id, u['update_id'])
+    
     start = time.time()
     reminder_sent = False
-
+    
     while time.time() - start < timeout:
         elapsed = time.time() - start
         time.sleep(5)
-
+        
         if elapsed >= 1800 and not reminder_sent:
-            send_message("⏰ *Reminder!*\n\n" + prompt + "\n\n_30 minutes left!_")
+            send_message("⏰ Reminder: " + prompt + " (30 min left)")
             reminder_sent = True
-
+        
         try:
             new_updates = requests.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
                 params={"timeout": 30, "offset": last_id + 1},
-                timeout=35,
+                timeout=35
             ).json()
-        except Exception:
-            new_updates = None
-
-        if new_updates and new_updates.get("result"):
-            for update in new_updates["result"]:
-                last_id = update["update_id"]
-                if "message" in update:
-                    msg = update["message"]
-                    if str(msg.get("chat", {}).get("id", "")) == str(CHAT_ID):
-                        return msg.get("text", "").strip()
-
+        except:
+            continue
+        
+        if new_updates and new_updates.get('result'):
+            for update in new_updates['result']:
+                last_id = update['update_id']
+                if 'message' in update:
+                    msg = update['message']
+                    if str(msg.get('chat', {}).get('id', '')) == str(CHAT_ID):
+                        return msg.get('text', '').strip()
+    
     send_message("⏰ No reply in 1 hour. Skipping.")
     return None
-
 
 def validate_number(text: Optional[str], digits: int) -> Optional[int]:
     if not text:
         return None
-    t = text.strip().replace(" ", "")
-    if not t.isdigit():
+    text = text.strip().replace(' ', '')
+    if not text.isdigit() or len(text) > digits:
         return None
-    if len(t) > digits:
-        return None
-    return int(t.zfill(digits))
+    return int(text.zfill(digits))
 
+# ══════════════════════════════════════════════════════════════════════════
+# DATA
+# ══════════════════════════════════════════════════════════════════════════
 
-# ==============================
-# DATA LOADING / SAVING
-# ==============================
-
-def _sort_draws(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["draw_order"] = df["Draw Time"].map(DRAW_ORDER).fillna(99).astype(int)
-    df = df.sort_values(["Date", "draw_order"]).drop(columns=["draw_order"]).reset_index(drop=True)
-    return df
-
-
-def load_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+def load_data():
     print("📂 Loading data...")
     try:
         df3 = pd.read_excel(PICK3_FILE)
         df4 = pd.read_excel(PICK4_FILE)
-
-        for df in (df3, df4):
-            df["Date"] = pd.to_datetime(df["Date"])
-            df["Winning Number"] = pd.to_numeric(df["Winning Number"], errors="coerce")
-
-        df3 = df3[df3["Winning Number"].notna()].copy()
-        df4 = df4[df4["Winning Number"].notna()].copy()
-        df3["Winning Number"] = df3["Winning Number"].astype(int)
-        df4["Winning Number"] = df4["Winning Number"].astype(int)
-
-        df3 = _sort_draws(df3)
-        df4 = _sort_draws(df4)
-
+        
+        df3['Date'] = pd.to_datetime(df3['Date'])
+        df4['Date'] = pd.to_datetime(df4['Date'])
+        
+        df3['Winning Number'] = pd.to_numeric(df3['Winning Number'], errors='coerce')
+        df4['Winning Number'] = pd.to_numeric(df4['Winning Number'], errors='coerce')
+        
+        df3 = df3[df3['Winning Number'].notna()].copy()
+        df4 = df4[df4['Winning Number'].notna()].copy()
+        
+        df3['Winning Number'] = df3['Winning Number'].astype(int)
+        df4['Winning Number'] = df4['Winning Number'].astype(int)
+        
         print(f"  ✅ Pick 3: {len(df3):,} records")
         print(f"  ✅ Pick 4: {len(df4):,} records")
         return df3, df4
@@ -184,426 +179,448 @@ def load_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
         print(f"  ❌ Error: {e}")
         return None, None
 
-
-def save_result(filepath: str, date: str, draw_time: str, number: int) -> bool:
+def save_result(filepath: str, date: str, draw_time: str, number: int):
     try:
         df = pd.read_excel(filepath)
-        df["Date"] = pd.to_datetime(df["Date"])
+        df['Date'] = pd.to_datetime(df['Date'])
         date_dt = pd.to_datetime(date)
-
-        if ((df["Date"] == date_dt) & (df["Draw Time"] == draw_time)).any():
-            print("  ⚠️  Already exists")
+        
+        if ((df['Date'] == date_dt) & (df['Draw Time'] == draw_time)).any():
             return False
-
-        new_row = pd.DataFrame([{"Date": date_dt, "Draw Time": draw_time, "Winning Number": int(number)}])
+        
+        new_row = pd.DataFrame([{
+            'Date': date_dt,
+            'Draw Time': draw_time,
+            'Winning Number': int(number)
+        }])
         df = pd.concat([df, new_row], ignore_index=True)
-        df = _sort_draws(df)
+        df = df.sort_values('Date').reset_index(drop=True)
         df.to_excel(filepath, index=False)
-
+        
         print(f"  ✅ Saved: {draw_time} = {number}")
         return True
     except Exception as e:
-        print(f"  ❌ Error saving: {e}")
+        print(f"  ❌ Error: {e}")
         return False
 
+# ══════════════════════════════════════════════════════════════════════════
+# SELF-LEARNING WEIGHTS
+# ══════════════════════════════════════════════════════════════════════════
 
-# ==============================
-# FEATURE ENGINEERING (leakage-safe)
-# ==============================
-
-def add_digits(df: pd.DataFrame, n_digits: int) -> pd.DataFrame:
-    df = df.copy()
-    s = df["Winning Number"].astype(int).astype(str).str.zfill(n_digits)
-    for i in range(n_digits):
-        df[f"Digit{i+1}"] = s.str[i].astype(int)
-    return df
-
-
-def add_midday_features(df: pd.DataFrame, n_digits: int) -> pd.DataFrame:
-    """
-    Historic per-date Midday→Evening join:
-      evening rows receive that date's midday digits.
-    """
-    df = df.copy()
-    mid = df[df["Draw Time"].eq("MIDDAY")][["Date"] + [f"Digit{i+1}" for i in range(n_digits)]].copy()
-    mid = mid.rename(columns={f"Digit{i+1}": f"Midday_Digit{i+1}" for i in range(n_digits)})
-    df = df.merge(mid, on="Date", how="left")
-    df["Midday_Sum"] = df[[f"Midday_Digit{i+1}" for i in range(n_digits)]].sum(axis=1, min_count=1)
-    return df
-
-
-def create_features(df: pd.DataFrame, game: str) -> pd.DataFrame:
-    """
-    Rule: any outcome-derived predictor must come from the past (shifted).
-    """
-    df = df.copy()
-    n_digits = 3 if game == "pick3" else 4
-
-    df = _sort_draws(df)
-    df = add_digits(df, n_digits)
-    df = add_midday_features(df, n_digits)
-
-    digit_cols = [f"Digit{i+1}" for i in range(n_digits)]
-
-    # Time features (safe)
-    df["DayOfWeek"] = df["Date"].dt.dayofweek
-    df["Month"] = df["Date"].dt.month
-    df["IsWeekend"] = df["DayOfWeek"].isin([5, 6]).astype(int)
-    df["DayOfWeek_sin"] = np.sin(2 * np.pi * df["DayOfWeek"] / 7)
-    df["DayOfWeek_cos"] = np.cos(2 * np.pi * df["DayOfWeek"] / 7)
-    df["Month_sin"] = np.sin(2 * np.pi * df["Month"] / 12)
-    df["Month_cos"] = np.cos(2 * np.pi * df["Month"] / 12)
-
-    # Outcome-derived stats (compute but DO NOT use current row values as features)
-    df["Sum"] = df[digit_cols].sum(axis=1)
-    df["NumEven"] = (df[digit_cols] % 2 == 0).sum(axis=1)
-    df["NumUnique"] = df[digit_cols].nunique(axis=1)
-
-    # Shifted stats are safe predictors
-    df["Sum_lag1"] = df["Sum"].shift(1)
-    df["NumEven_lag1"] = df["NumEven"].shift(1)
-    df["NumUnique_lag1"] = df["NumUnique"].shift(1)
-
-    # Lag digit features
-    for lag in LAGS:
-        df[f"Lag_Sum_{lag}"] = df["Sum"].shift(lag)
-        for i in range(n_digits):
-            df[f"Lag_Digit{i+1}_{lag}"] = df[f"Digit{i+1}"].shift(lag)
-
-    # Rolling on shifted sum
-    for w in ROLL_WINDOWS:
-        df[f"Roll_SumMean_{w}"] = df["Sum"].shift(1).rolling(w, min_periods=1).mean()
-        df[f"Roll_SumStd_{w}"] = df["Sum"].shift(1).rolling(w, min_periods=1).std()
-
-    # Drop early rows + NaNs from lagging
-    df = df.iloc[MIN_HISTORY_ROWS:].copy()
-    df = df.dropna().reset_index(drop=True)
-    return df
-
-
-# ==============================
-# MODELING: Digit-wise multiclass
-# ==============================
-
-def train_xgb_digit_models(
-    X_train: np.ndarray,
-    y_train_digits: np.ndarray,
-    X_test: np.ndarray,
-    y_test_digits: np.ndarray,
-    n_digits: int,
-) -> Tuple[List[xgb.XGBClassifier], List[np.ndarray], MinMaxScaler, Dict]:
-    scaler = MinMaxScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_test_s = scaler.transform(X_test)
-
-    models: List[xgb.XGBClassifier] = []
-    probs_test: List[np.ndarray] = []
-    labels = np.arange(10)
-
-    per_digit = []
-    for pos in range(n_digits):
-        ytr = y_train_digits[:, pos]
-        yte = y_test_digits[:, pos]
-
-        model = xgb.XGBClassifier(
-            objective="multi:softprob",
-            num_class=10,
-            n_estimators=250,
-            learning_rate=0.05,
-            max_depth=5,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            reg_lambda=1.0,
-            random_state=SEED,
-            eval_metric="mlogloss",
-            n_jobs=-1,
-        )
-        model.fit(X_train_s, ytr)
-
-        p = model.predict_proba(X_test_s)
-        # Ensure [n,10]
-        if p.shape[1] != 10:
-            full = np.full((p.shape[0], 10), 1e-12, dtype=float)
-            present = model.classes_.astype(int)
-            full[:, present] = p
-            p = full
-
-        pred = np.argmax(p, axis=1)
-        acc = accuracy_score(yte, pred)
-        ll = log_loss(yte, p, labels=labels)
-
-        per_digit.append({"digit_pos": pos + 1, "accuracy": float(acc), "logloss": float(ll)})
-        models.append(model)
-        probs_test.append(p)
-
-    metrics = {
-        "per_digit": per_digit,
-        "mean_digit_accuracy": float(np.mean([m["accuracy"] for m in per_digit])),
-        "mean_digit_logloss": float(np.mean([m["logloss"] for m in per_digit])),
-    }
-    return models, probs_test, scaler, metrics
-
-
-# ==============================
-# TOP-K: Beam Search
-# ==============================
-
-def beam_topk(digit_probs: List[np.ndarray], k: int = TOPK, beam_width: int = BEAM_WIDTH):
-    beams = [("", 1.0)]
-    for probs in digit_probs:
-        top_d = np.argsort(probs)[::-1][:beam_width]
-        new = []
-        for prefix, p_prefix in beams:
-            for d in top_d:
-                new.append((prefix + str(int(d)), p_prefix * float(probs[int(d)])))
-        new.sort(key=lambda x: x[1], reverse=True)
-        beams = new[:beam_width]
-    beams.sort(key=lambda x: x[1], reverse=True)
-    return beams[:k]
-
-
-def rel_confidence(topk):
-    if not topk:
-        return 0.0
-    s = sum(p for _, p in topk)
-    return (topk[0][1] / s) if s > 0 else 0.0
-
-
-def evaluate_topk_rates(y_test_digits: np.ndarray, probs_test: List[np.ndarray], n_digits: int, k: int = TOPK) -> Dict:
-    n = len(y_test_digits)
-    exact = 0
-    hitk = 0
-    for i in range(n):
-        actual = "".join(str(int(d)) for d in y_test_digits[i])
-        digit_probs_i = [probs_test[pos][i] for pos in range(n_digits)]
-        topk_list = beam_topk(digit_probs_i, k=k)
-        preds = [s for s, _ in topk_list]
-        if preds and preds[0] == actual:
-            exact += 1
-        if actual in preds:
-            hitk += 1
+def load_weights(game: str):
+    """Load learned model weights"""
+    if os.path.exists(WEIGHTS_FILE):
+        try:
+            with open(WEIGHTS_FILE, 'r') as f:
+                all_weights = json.load(f)
+                if game in all_weights:
+                    return all_weights[game]
+        except:
+            pass
+    
+    # Default: equal weights
     return {
-        "k": k,
-        "n_test": n,
-        "exact_match_rate": exact / n if n else 0.0,
-        "topk_hit_rate": hitk / n if n else 0.0,
+        'lstm_weight': 1.0,
+        'xgb_weight': 1.0,
+        'iterations': 0,
+        'history': []
     }
 
+def save_weights(game: str, weights: Dict):
+    """Save learned weights"""
+    all_weights = {}
+    if os.path.exists(WEIGHTS_FILE):
+        try:
+            with open(WEIGHTS_FILE, 'r') as f:
+                all_weights = json.load(f)
+        except:
+            pass
+    
+    all_weights[game] = weights
+    
+    with open(WEIGHTS_FILE, 'w') as f:
+        json.dump(all_weights, f, indent=2)
 
-# ==============================
-# TRAIN + PREDICT
-# ==============================
+def update_weights(game: str, lstm_error: float, xgb_error: float):
+    """
+    🧠 SELF-LEARNING: Update weights based on which model performed better
+    """
+    weights = load_weights(game)
+    
+    # Which model was better?
+    if lstm_error < xgb_error:
+        # LSTM was better, increase its weight
+        adjustment = LEARNING_RATE * (1 - lstm_error / (lstm_error + xgb_error))
+        weights['lstm_weight'] *= (1.0 + adjustment)
+        weights['xgb_weight'] *= (1.0 - adjustment * 0.5)
+    else:
+        # XGBoost was better, increase its weight
+        adjustment = LEARNING_RATE * (1 - xgb_error / (lstm_error + xgb_error))
+        weights['xgb_weight'] *= (1.0 + adjustment)
+        weights['lstm_weight'] *= (1.0 - adjustment * 0.5)
+    
+    # Keep weights in reasonable range
+    weights['lstm_weight'] = max(0.3, min(3.0, weights['lstm_weight']))
+    weights['xgb_weight'] = max(0.3, min(3.0, weights['xgb_weight']))
+    
+    # Normalize
+    total = weights['lstm_weight'] + weights['xgb_weight']
+    weights['lstm_weight'] = weights['lstm_weight'] / total * 2
+    weights['xgb_weight'] = weights['xgb_weight'] / total * 2
+    
+    weights['iterations'] += 1
+    weights['history'].append({
+        'timestamp': datetime.now().isoformat(),
+        'lstm_error': lstm_error,
+        'xgb_error': xgb_error,
+        'lstm_weight': weights['lstm_weight'],
+        'xgb_weight': weights['xgb_weight']
+    })
+    
+    # Keep last 100 history
+    if len(weights['history']) > 100:
+        weights['history'] = weights['history'][-100:]
+    
+    save_weights(game, weights)
+    
+    print(f"  🧠 Weights updated (iter {weights['iterations']}):")
+    print(f"     LSTM: {weights['lstm_weight']:.2f} | XGB: {weights['xgb_weight']:.2f}")
+    
+    return weights
 
-def train_and_predict(df: pd.DataFrame, game: str, target_draw: str, todays_midday_number: Optional[int] = None) -> Dict:
-    assert target_draw in ("MIDDAY", "EVENING")
-    n_digits = 3 if game == "pick3" else 4
+# ══════════════════════════════════════════════════════════════════════════
+# PREDICTIONS LOG
+# ══════════════════════════════════════════════════════════════════════════
 
-    df_feat = create_features(df, game)
+def load_log():
+    if os.path.exists(PREDICTIONS_LOG):
+        try:
+            with open(PREDICTIONS_LOG, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-    # Subset to target draw type
-    df_target = df_feat[df_feat["Draw Time"].eq(target_draw)].copy().reset_index(drop=True)
+def save_log(log):
+    with open(PREDICTIONS_LOG, 'w') as f:
+        json.dump(log, f, indent=2)
 
-    # For MIDDAY prediction, midday features are unknown → drop them
-    midday_cols = [f"Midday_Digit{i+1}" for i in range(n_digits)] + ["Midday_Sum"]
-    if target_draw == "MIDDAY":
-        for c in midday_cols:
-            if c in df_target.columns:
-                df_target = df_target.drop(columns=[c])
+def add_prediction(game: str, draw_time: str, prediction: int, lstm_pred: int, xgb_pred: int):
+    log = load_log()
+    log.append({
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'game': game,
+        'draw_time': draw_time,
+        'prediction': prediction,
+        'lstm_pred': lstm_pred,
+        'xgb_pred': xgb_pred,
+        'actual': None,
+        'error': None,
+        'lstm_error': None,
+        'xgb_error': None,
+        'timestamp': datetime.now().isoformat()
+    })
+    save_log(log)
 
-    # Targets (current digits)
-    y_digits = df_target[[f"Digit{i+1}" for i in range(n_digits)]].values.astype(int)
+def update_actual(game: str, draw_time: str, actual: int):
+    log = load_log()
+    today = datetime.now().strftime('%Y-%m-%d')
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    for date_str in [today, yesterday]:
+        for entry in reversed(log):
+            if (entry['date'] == date_str and 
+                entry['game'] == game and 
+                entry['draw_time'] == draw_time and
+                entry['actual'] is None):
+                
+                entry['actual'] = actual
+                entry['error'] = abs(actual - entry['prediction'])
+                entry['lstm_error'] = abs(actual - entry['lstm_pred'])
+                entry['xgb_error'] = abs(actual - entry['xgb_pred'])
+                
+                save_log(log)
+                
+                # 🧠 SELF-LEARNING: Update weights
+                update_weights(game, entry['lstm_error'], entry['xgb_error'])
+                
+                return entry
+    
+    return None
 
-    # Exclude columns that would leak current outcome
-    exclude = set(
-        ["Date", "Draw Time", "Winning Number"]
-        + [f"Digit{i+1}" for i in range(n_digits)]
-        + ["Sum", "NumEven", "NumUnique"]  # unshifted outcome stats excluded
+# ══════════════════════════════════════════════════════════════════════════
+# PREPARE DATA FOR TRAINING
+# ══════════════════════════════════════════════════════════════════════════
+
+def prepare_lstm_data(data, seq_length):
+    """Prepare sequences for LSTM"""
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i + seq_length])
+        y.append(data[i + seq_length])
+    return np.array(X), np.array(y)
+
+def calculate_batch_size(X, target_batches=874):
+    """Calculate batch size to get ~874 batches"""
+    batch_size = max(1, len(X) // target_batches)
+    return batch_size
+
+# ══════════════════════════════════════════════════════════════════════════
+# BUILD MODELS
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_lstm_model(seq_length):
+    """Build LSTM model (from your code)"""
+    if not TF_AVAILABLE:
+        return None
+    
+    model = Sequential([
+        LSTM(200, return_sequences=True, input_shape=(seq_length, 1)),
+        BatchNormalization(),
+        Dropout(0.3),
+        LSTM(150, return_sequences=True),
+        BatchNormalization(),
+        Dropout(0.3),
+        LSTM(100, return_sequences=False),
+        BatchNormalization(),
+        Dropout(0.3),
+        Dense(50, activation='relu'),
+        Dense(1)
+    ])
+    
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.0003),
+        loss='mean_squared_error'
     )
-    feature_cols = [c for c in df_target.columns if c not in exclude]
-    X = df_target[feature_cols].values.astype(float)
+    
+    return model
 
-    # Chronological split 80/20
-    split = int(0.8 * len(df_target))
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y_digits[:split], y_digits[split:]
+# ══════════════════════════════════════════════════════════════════════════
+# TRAIN AND PREDICT
+# ══════════════════════════════════════════════════════════════════════════
 
-    models, probs_test, scaler, metrics = train_xgb_digit_models(X_train, y_train, X_test, y_test, n_digits)
-    topk_metrics = evaluate_topk_rates(y_test, probs_test, n_digits, k=TOPK)
-
-    # Next-draw prediction context: last row for that draw type
-    row_last = df_target.tail(1).copy()
-
-    # If predicting EVENING and today's midday is known, overwrite midday feature cols just for prediction row
-    if target_draw == "EVENING" and todays_midday_number is not None:
-        md = [int(d) for d in str(int(todays_midday_number)).zfill(n_digits)]
-        for i in range(n_digits):
-            col = f"Midday_Digit{i+1}"
-            if col in row_last.columns:
-                row_last[col] = md[i]
-        if "Midday_Sum" in row_last.columns:
-            row_last["Midday_Sum"] = sum(md)
-
-    X_last = row_last[feature_cols].values.astype(float)
-    X_last_s = scaler.transform(X_last)
-
-    next_digit_probs = []
-    for m in models:
-        p = m.predict_proba(X_last_s)[0]
-        if p.shape[0] != 10:
-            full = np.full((10,), 1e-12, dtype=float)
-            present = m.classes_.astype(int)
-            full[present] = p
-            p = full
-        next_digit_probs.append(p)
-
-    topk_list = beam_topk(next_digit_probs, k=TOPK, beam_width=BEAM_WIDTH)
-    conf = rel_confidence(topk_list)
-
+def train_and_predict(df, game: str):
+    """Train LSTM + XGBoost and make prediction"""
+    print(f"\n🔥 Training {game.upper()}...")
+    
+    # Load learned weights
+    weights = load_weights(game)
+    print(f"  🧠 Using weights - LSTM: {weights['lstm_weight']:.2f}, XGB: {weights['xgb_weight']:.2f}")
+    
+    # Prepare data
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(df[['Winning Number']])
+    
+    X, y = prepare_lstm_data(scaled_data, SEQ_LENGTH)
+    X_lstm = X.reshape((X.shape[0], X.shape[1], 1))
+    X_xgb = X.reshape((X.shape[0], -1))
+    
+    batch_size = calculate_batch_size(X, 874)
+    
+    lstm_pred = None
+    xgb_pred = None
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # TRAIN LSTM
+    # ══════════════════════════════════════════════════════════════════════
+    if TF_AVAILABLE:
+        print("  📊 Training LSTM...")
+        model_lstm = build_lstm_model(SEQ_LENGTH)
+        
+        callbacks = [EarlyStopping(patience=20, restore_best_weights=True)]
+        
+        model_lstm.fit(
+            X_lstm, y,
+            epochs=200,
+            batch_size=batch_size,
+            verbose=0,
+            callbacks=callbacks
+        )
+        
+        # Predict
+        last_seq = X_lstm[-1].reshape(1, SEQ_LENGTH, 1)
+        lstm_pred_scaled = model_lstm.predict(last_seq, verbose=0)
+        lstm_pred = int(scaler.inverse_transform(lstm_pred_scaled)[0][0])
+        
+        print(f"     LSTM prediction: {lstm_pred}")
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # TRAIN XGBOOST
+    # ══════════════════════════════════════════════════════════════════════
+    print("  📊 Training XGBoost...")
+    model_xgb = xgb.XGBRegressor(
+        n_estimators=100,
+        learning_rate=0.05,
+        random_state=SEED
+    )
+    
+    model_xgb.fit(X_xgb, y)
+    
+    # Predict
+    last_seq_xgb = X_xgb[-1].reshape(1, -1)
+    xgb_pred_scaled = model_xgb.predict(last_seq_xgb)
+    xgb_pred = int(scaler.inverse_transform([[xgb_pred_scaled[0]]])[0][0])
+    
+    print(f"     XGBoost prediction: {xgb_pred}")
+    
+    # ══════════════════════════════════════════════════════════════════════
+    # WEIGHTED ENSEMBLE (SELF-LEARNING!)
+    # ══════════════════════════════════════════════════════════════════════
+    if lstm_pred is not None and xgb_pred is not None:
+        # Use learned weights
+        final_pred = int(
+            (lstm_pred * weights['lstm_weight'] + xgb_pred * weights['xgb_weight']) / 
+            (weights['lstm_weight'] + weights['xgb_weight'])
+        )
+    elif lstm_pred is not None:
+        final_pred = lstm_pred
+    else:
+        final_pred = xgb_pred
+    
+    # Ensure valid range
+    n_digits = 3 if game == 'pick3' else 4
+    max_val = 999 if game == 'pick3' else 9999
+    final_pred = max(0, min(max_val, final_pred))
+    
+    print(f"  🎯 Final prediction: {str(final_pred).zfill(n_digits)}")
+    
     return {
-        "game": game,
-        "target_draw": target_draw,
-        "n_digits": n_digits,
-        "feature_count": len(feature_cols),
-        "train_size": int(split),
-        "test_size": int(len(df_target) - split),
-        "metrics": metrics,
-        "topk_metrics": topk_metrics,
-        "prediction_top1": topk_list[0][0] if topk_list else "0" * n_digits,
-        "prediction_topk": topk_list,
-        "relative_confidence_top1_in_topk": float(conf),
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        'prediction': final_pred,
+        'lstm_pred': lstm_pred if lstm_pred else final_pred,
+        'xgb_pred': xgb_pred,
+        'lstm_weight': weights['lstm_weight'],
+        'xgb_weight': weights['xgb_weight'],
+        'iterations': weights['iterations']
     }
 
-
-# ==============================
+# ══════════════════════════════════════════════════════════════════════════
 # WORKFLOWS
-# ==============================
+# ══════════════════════════════════════════════════════════════════════════
 
 def morning_workflow():
-    """10 AM: enter last night's EVENING results, predict today's MIDDAY."""
-    print("\n☀️ MORNING WORKFLOW (V2)")
-    print("=" * 80)
-
+    """10 AM: Get last night results + Predict midday"""
+    print("\n☀️ MORNING WORKFLOW")
+    print("="*80)
+    
     yesterday = datetime.now() - timedelta(days=1)
-    y_str = yesterday.strftime("%Y-%m-%d")
-    y_display = yesterday.strftime("%A, %B %d, %Y")
-
-    today = datetime.now()
-    t_display = today.strftime("%A, %B %d, %Y")
-
-    send_message("☀️ *Good morning!*\n\nLet's enter last night's results!")
-
-    for game, digits, path in [("pick3", 3, PICK3_FILE), ("pick4", 4, PICK4_FILE)]:
+    y_str = yesterday.strftime('%Y-%m-%d')
+    y_display = yesterday.strftime('%A, %B %d, %Y')
+    
+    send_message("☀️ *Good morning!*\n\nEnter last night's results:")
+    
+    # Get last night's results
+    results = {}
+    for game, digits, path in [('pick3', 3, PICK3_FILE), ('pick4', 4, PICK4_FILE)]:
         num = None
         tries = 0
         while num is None and tries < 3:
-            reply = wait_for_reply(f"🌙 *{game.upper()} EVENING* from last night?\n({y_display})\n\n_({digits} digits)_")
+            reply = wait_for_reply(f"🌙 {game.upper()} EVENING ({y_display})?")
             num = validate_number(reply, digits)
             tries += 1
             if num is None:
-                send_message(f"❌ Invalid! {digits} digits needed. ({tries}/3)")
-        if num is not None:
-            save_result(path, y_str, "EVENING", num)
-
+                send_message(f"❌ Invalid! Need {digits} digits ({tries}/3)")
+        
+        if num:
+            results[game] = num
+            save_result(path, y_str, 'EVENING', num)
+    
+    # Update log and learn
+    for game, actual in results.items():
+        entry = update_actual(game, 'EVENING', actual)
+    
+    # Reload data
     df3, df4 = load_data()
     if df3 is None:
-        send_message("❌ Error loading data")
         return
-
-    r3 = train_and_predict(df3, "pick3", target_draw="MIDDAY")
-    r4 = train_and_predict(df4, "pick4", target_draw="MIDDAY")
-
-    msg = f"☀️ *TODAY MIDDAY Predictions*\n{t_display}\n\n"
-    msg += f"🎲 *PICK 3*: `{r3['prediction_top1']}` (rel.conf: {r3['relative_confidence_top1_in_topk']*100:.1f}%)\n"
-    msg += f"   Top{TOPK}: {', '.join(s for s,_ in r3['prediction_topk'])}\n"
-    msg += f"   Mean digit acc (test): {r3['metrics']['mean_digit_accuracy']*100:.1f}% | logloss: {r3['metrics']['mean_digit_logloss']:.3f}\n\n"
-    msg += f"🎲 *PICK 4*: `{r4['prediction_top1']}` (rel.conf: {r4['relative_confidence_top1_in_topk']*100:.1f}%)\n"
-    msg += f"   Top{TOPK}: {', '.join(s for s,_ in r4['prediction_topk'])}\n"
-    msg += f"   Mean digit acc (test): {r4['metrics']['mean_digit_accuracy']*100:.1f}% | logloss: {r4['metrics']['mean_digit_logloss']:.3f}\n\n"
-    msg += "🎓 *V2 leakage-safe evaluation included.*"
+    
+    # Make predictions
+    print("\n🔮 Predicting MIDDAY...")
+    r3 = train_and_predict(df3, 'pick3')
+    r4 = train_and_predict(df4, 'pick4')
+    
+    # Log predictions
+    add_prediction('pick3', 'MIDDAY', r3['prediction'], r3['lstm_pred'], r3['xgb_pred'])
+    add_prediction('pick4', 'MIDDAY', r4['prediction'], r4['lstm_pred'], r4['xgb_pred'])
+    
+    # Send message
+    msg = f"☀️ *TODAY MIDDAY Predictions*\n\n"
+    msg += f"🎲 *PICK 3*: `{str(r3['prediction']).zfill(3)}`\n"
+    msg += f"   🧠 Learning iteration: {r3['iterations']}\n\n"
+    msg += f"🎲 *PICK 4*: `{str(r4['prediction']).zfill(4)}`\n"
+    msg += f"   🧠 Learning iteration: {r4['iterations']}\n\n"
+    msg += "🕐 Midday results at 2 PM!"
+    
     send_message(msg)
-    print("✅ Morning workflow complete!")
-
+    print("\n✅ Morning complete!")
 
 def afternoon_workflow():
-    """2 PM: enter today's MIDDAY results, predict today's EVENING."""
-    print("\n🌆 AFTERNOON WORKFLOW (V2)")
-    print("=" * 80)
-
+    """2 PM: Get midday results + Predict evening"""
+    print("\n🌆 AFTERNOON WORKFLOW")
+    print("="*80)
+    
     today = datetime.now()
-    t_str = today.strftime("%Y-%m-%d")
-    t_display = today.strftime("%A, %B %d, %Y")
-
-    send_message(f"🌆 *Midday Results Time!*\n{t_display}")
-
-    midday_results = {}
-    for game, digits, path in [("pick3", 3, PICK3_FILE), ("pick4", 4, PICK4_FILE)]:
+    t_str = today.strftime('%Y-%m-%d')
+    
+    send_message("🌆 *Midday Results Time!*")
+    
+    # Get midday results
+    results = {}
+    for game, digits, path in [('pick3', 3, PICK3_FILE), ('pick4', 4, PICK4_FILE)]:
         num = None
         tries = 0
         while num is None and tries < 3:
-            reply = wait_for_reply(f"🎲 *{game.upper()} MIDDAY* result?\n\n_({digits} digits)_")
+            reply = wait_for_reply(f"🎲 {game.upper()} MIDDAY?")
             num = validate_number(reply, digits)
             tries += 1
             if num is None:
-                send_message(f"❌ Invalid! {digits} digits needed. ({tries}/3)")
-        if num is not None:
-            midday_results[game] = num
-            save_result(path, t_str, "MIDDAY", num)
-
+                send_message(f"❌ Invalid! Need {digits} digits ({tries}/3)")
+        
+        if num:
+            results[game] = num
+            save_result(path, t_str, 'MIDDAY', num)
+    
+    # Update and learn
+    for game, actual in results.items():
+        entry = update_actual(game, 'MIDDAY', actual)
+    
+    # Reload
     df3, df4 = load_data()
     if df3 is None:
-        send_message("❌ Error loading data")
         return
-
-    r3 = train_and_predict(df3, "pick3", target_draw="EVENING", todays_midday_number=midday_results.get("pick3"))
-    r4 = train_and_predict(df4, "pick4", target_draw="EVENING", todays_midday_number=midday_results.get("pick4"))
-
-    msg = f"🌙 *TODAY EVENING Predictions*\n{t_display}\n\n"
-    msg += f"🎲 *PICK 3*: `{r3['prediction_top1']}` (rel.conf: {r3['relative_confidence_top1_in_topk']*100:.1f}%)\n"
-    msg += f"   Top{TOPK}: {', '.join(s for s,_ in r3['prediction_topk'])}\n"
-    msg += f"   Top{TOPK} hit rate (test): {r3['topk_metrics']['topk_hit_rate']*100:.2f}%\n\n"
-    msg += f"🎲 *PICK 4*: `{r4['prediction_top1']}` (rel.conf: {r4['relative_confidence_top1_in_topk']*100:.1f}%)\n"
-    msg += f"   Top{TOPK}: {', '.join(s for s,_ in r4['prediction_topk'])}\n"
-    msg += f"   Top{TOPK} hit rate (test): {r4['topk_metrics']['topk_hit_rate']*100:.2f}%\n\n"
-    msg += "✨ Midday used as per-date feature (historic join).\n🎓 V2 evaluation included."
+    
+    # Evening predictions
+    print("\n🔮 Predicting EVENING...")
+    r3 = train_and_predict(df3, 'pick3')
+    r4 = train_and_predict(df4, 'pick4')
+    
+    # Log
+    add_prediction('pick3', 'EVENING', r3['prediction'], r3['lstm_pred'], r3['xgb_pred'])
+    add_prediction('pick4', 'EVENING', r4['prediction'], r4['lstm_pred'], r4['xgb_pred'])
+    
+    # Send
+    msg = f"🌙 *EVENING Predictions*\n\n"
+    msg += f"🎲 *PICK 3*: `{str(r3['prediction']).zfill(3)}`\n"
+    msg += f"   🧠 Learning iteration: {r3['iterations']}\n\n"
+    msg += f"🎲 *PICK 4*: `{str(r4['prediction']).zfill(4)}`\n"
+    msg += f"   🧠 Learning iteration: {r4['iterations']}\n\n"
+    msg += "🍀 Good luck!"
+    
     send_message(msg)
-    print("✅ Afternoon workflow complete!")
+    print("\n✅ Afternoon complete!")
 
+# ══════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════
 
 def main():
-    print("=" * 80)
-    print("🎓 ACADEMICALLY CORRECT LOTTERY PREDICTION SYSTEM (V2)")
-    print("=" * 80)
-
     hour = datetime.now().hour
-    force_test = os.environ.get("FORCE_TEST", "false").lower() == "true"
-
-    if force_test:
-        df3, df4 = load_data()
-        if df3 is None:
-            return
-        for df, game in [(df3, "pick3"), (df4, "pick4")]:
-            for draw in ("MIDDAY", "EVENING"):
-                res = train_and_predict(df, game, target_draw=draw)
-                print(f"\n[{game.upper()} {draw}] top1={res['prediction_top1']} rel_conf={res['relative_confidence_top1_in_topk']*100:.1f}%")
-                print(f"  mean_digit_acc={res['metrics']['mean_digit_accuracy']*100:.2f}% mean_digit_logloss={res['metrics']['mean_digit_logloss']:.3f}")
-                print(f"  top{TOPK}_hit_rate={res['topk_metrics']['topk_hit_rate']*100:.2f}% exact={res['topk_metrics']['exact_match_rate']*100:.2f}%")
-        return
-
-    # Scheduling (UTC-based example like your original)
-    # 10 AM EST ≈ 15 UTC
-    if 15 <= hour < 17:
+    
+    if 15 <= hour < 17:  # 10 AM EST
         morning_workflow()
-    # 2 PM EST ≈ 19 UTC
-    elif 19 <= hour < 21:
+    elif 19 <= hour < 21:  # 2 PM EST
         afternoon_workflow()
     else:
         print(f"No action for hour {hour}")
-
-    print("\n" + "=" * 80)
-    print("✅ COMPLETE")
-    print("=" * 80)
-
 
 if __name__ == "__main__":
     try:
@@ -612,4 +629,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         send_message(f"❌ Error: {str(e)}")
-        raise
